@@ -63,37 +63,36 @@ class ServerTranscriptionEngine(private val client: OkHttpClient = OkHttpClient(
         }
     }
 
+    // Unlike healthCheck/transcribe, failures here are NOT swallowed: this is the one call
+    // driven directly by a user-visible "Test Connection" action, and the caller already has
+    // a catch block that surfaces the real error message. Silently returning emptyList() on a
+    // network failure or HTTP error used to be indistinguishable from "connected fine, server
+    // just has zero models" - a genuinely empty/missing `models` array in a 2xx response is
+    // the only case that still returns emptyList() normally.
     suspend fun fetchModels(baseUrl: String): List<ServerModel> {
         if (baseUrl.isBlank()) return emptyList()
-        return try {
-            val request = Request.Builder()
-                .url("${normalizeBaseUrl(baseUrl)}/v1/models")
-                .get()
-                .build()
-            val response = executeAsync(client, request)
-            response.use { resp ->
-                if (!resp.isSuccessful) {
-                    Log.w(tag, "fetchModels failed with HTTP ${resp.code}")
-                    return emptyList()
-                }
-                val bodyString = resp.body?.string()
-                if (bodyString.isNullOrEmpty()) return emptyList()
-
-                val json = JSONObject(bodyString)
-                val modelsArray = json.optJSONArray("models") ?: return emptyList()
-
-                (0 until modelsArray.length()).mapNotNull { index ->
-                    val obj = modelsArray.optJSONObject(index) ?: return@mapNotNull null
-                    val id = obj.optString("id", "")
-                    if (id.isEmpty()) return@mapNotNull null
-                    val label = obj.optString("label", id)
-                    ServerModel(id, label)
-                }
+        val request = Request.Builder()
+            .url("${normalizeBaseUrl(baseUrl)}/v1/models")
+            .get()
+            .build()
+        val response = executeAsync(client, request)
+        return response.use { resp ->
+            if (!resp.isSuccessful) {
+                throw IOException("Server responded with HTTP ${resp.code}")
             }
-        } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException) throw e
-            Log.e(tag, "fetchModels failed", e)
-            emptyList()
+            val bodyString = resp.body?.string()
+            if (bodyString.isNullOrEmpty()) return@use emptyList()
+
+            val json = JSONObject(bodyString)
+            val modelsArray = json.optJSONArray("models") ?: return@use emptyList()
+
+            (0 until modelsArray.length()).mapNotNull { index ->
+                val obj = modelsArray.optJSONObject(index) ?: return@mapNotNull null
+                val id = obj.optString("id", "")
+                if (id.isEmpty()) return@mapNotNull null
+                val label = obj.optString("label", id)
+                ServerModel(id, label)
+            }
         }
     }
 

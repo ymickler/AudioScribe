@@ -94,27 +94,41 @@ class ServerTranscriptionEngineTest {
     }
 
     @Test
-    fun `fetchModels returns empty list on non-2xx response`() = runTest {
+    fun `fetchModels returns empty list when models array is missing`() = runTest {
+        val client = fakeClient { request -> jsonResponse(request, 200, "{}") }
+        val engine = ServerTranscriptionEngine(client)
+
+        assertTrue(engine.fetchModels("http://fake-server:8000").isEmpty())
+    }
+
+    // Unlike healthCheck, fetchModels is driven by a user-visible "Test Connection" action whose
+    // caller already distinguishes success from failure - so a non-2xx, malformed body, or
+    // network error must throw rather than silently look like "connected, zero models" (that
+    // ambiguity is exactly what caused a real cleartext-blocked connection to be misreported as
+    // an empty model list instead of a connection failure).
+
+    @Test(expected = Exception::class)
+    fun `fetchModels throws on non-2xx response`() = runTest {
         val client = fakeClient { request -> jsonResponse(request, 500, "") }
         val engine = ServerTranscriptionEngine(client)
 
-        assertTrue(engine.fetchModels("http://fake-server:8000").isEmpty())
+        engine.fetchModels("http://fake-server:8000")
     }
 
-    @Test
-    fun `fetchModels returns empty list on malformed json instead of throwing`() = runTest {
+    @Test(expected = Exception::class)
+    fun `fetchModels throws on malformed json`() = runTest {
         val client = fakeClient { request -> jsonResponse(request, 200, "not valid json") }
         val engine = ServerTranscriptionEngine(client)
 
-        assertTrue(engine.fetchModels("http://fake-server:8000").isEmpty())
+        engine.fetchModels("http://fake-server:8000")
     }
 
-    @Test
-    fun `fetchModels returns empty list on network failure`() = runTest {
+    @Test(expected = Exception::class)
+    fun `fetchModels throws on network failure`() = runTest {
         val client = fakeClient { throw IOException("simulated network error") }
         val engine = ServerTranscriptionEngine(client)
 
-        assertTrue(engine.fetchModels("http://fake-server:8000").isEmpty())
+        engine.fetchModels("http://fake-server:8000")
     }
 
     // ---- transcribe ----
