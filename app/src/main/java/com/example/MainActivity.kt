@@ -179,6 +179,7 @@ fun MainScreen() {
     }
     var uiLanguage by remember { mutableStateOf(settingsManager.uiLanguage) }
     var currentTab by remember { mutableIntStateOf(0) }
+    var preferServerTranscription by remember { mutableStateOf(settingsManager.preferServerTranscription) }
     
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -383,67 +384,71 @@ fun MainScreen() {
                     }
                 }
 
-                val activeRequiredModel = when {
-                    settingsManager.sttEngine == "whisper" -> {
-                        when (settingsManager.whisperModelSize) {
-                            "base" -> com.example.engine.ModelDownloader.ModelType.WHISPER_BASE
-                            "small" -> com.example.engine.ModelDownloader.ModelType.WHISPER_SMALL
-                            else -> com.example.engine.ModelDownloader.ModelType.WHISPER_TINY
-                        }
-                    }
-                    settingsManager.getTargetLanguageCode() == "de" -> com.example.engine.ModelDownloader.ModelType.VOSK_DE
-                    else -> com.example.engine.ModelDownloader.ModelType.VOSK_EN
-                }
-                
-                var isActiveModelDownloaded by remember(settingsManager.sttEngine, settingsManager.language, settingsManager.whisperModelSize, modelUpdateTrigger) {
-                    mutableStateOf(modelDownloader.isModelDownloaded(activeRequiredModel))
-                }
-                
-                if (!isActiveModelDownloaded) {
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = SleekInnerSurface),
-                        shape = RoundedCornerShape(20.dp)
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.Warning,
-                                    contentDescription = "Warning",
-                                    tint = SleekPrimary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = Localization.getString("banner_model_required_title", uiLanguage),
-                                    color = SleekPrimary,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 16.sp
-                                )
+                // A user who prefers server-side transcription doesn't need a local model at all,
+                // so this "download a local model" gate only applies to local-engine users.
+                if (!preferServerTranscription) {
+                    val activeRequiredModel = when {
+                        settingsManager.sttEngine == "whisper" -> {
+                            when (settingsManager.whisperModelSize) {
+                                "base" -> com.example.engine.ModelDownloader.ModelType.WHISPER_BASE
+                                "small" -> com.example.engine.ModelDownloader.ModelType.WHISPER_SMALL
+                                else -> com.example.engine.ModelDownloader.ModelType.WHISPER_TINY
                             }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = String.format(
-                                    Localization.getString("banner_model_required_desc", uiLanguage),
-                                    activeRequiredModel.folderName,
-                                    activeRequiredModel.sizeLabel
-                                ),
-                                color = SleekText.copy(alpha = 0.8f),
-                                fontSize = 14.sp
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Button(
-                                onClick = {
-                                    currentTab = 1
-                                },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = SleekPrimary,
-                                    contentColor = SleekButtonText
+                        }
+                        settingsManager.getTargetLanguageCode() == "de" -> com.example.engine.ModelDownloader.ModelType.VOSK_DE
+                        else -> com.example.engine.ModelDownloader.ModelType.VOSK_EN
+                    }
+
+                    var isActiveModelDownloaded by remember(settingsManager.sttEngine, settingsManager.language, settingsManager.whisperModelSize, modelUpdateTrigger) {
+                        mutableStateOf(modelDownloader.isModelDownloaded(activeRequiredModel))
+                    }
+
+                    if (!isActiveModelDownloaded) {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = SleekInnerSurface),
+                            shape = RoundedCornerShape(20.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Default.Warning,
+                                        contentDescription = "Warning",
+                                        tint = SleekPrimary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = Localization.getString("banner_model_required_title", uiLanguage),
+                                        color = SleekPrimary,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 16.sp
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = String.format(
+                                        Localization.getString("banner_model_required_desc", uiLanguage),
+                                        activeRequiredModel.folderName,
+                                        activeRequiredModel.sizeLabel
+                                    ),
+                                    color = SleekText.copy(alpha = 0.8f),
+                                    fontSize = 14.sp
                                 )
-                            ) {
-                                Text(Localization.getString("banner_model_required_btn", uiLanguage))
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Button(
+                                    onClick = {
+                                        currentTab = 1
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = SleekPrimary,
+                                        contentColor = SleekButtonText
+                                    )
+                                ) {
+                                    Text(Localization.getString("banner_model_required_btn", uiLanguage))
+                                }
                             }
                         }
                     }
@@ -934,6 +939,201 @@ fun MainScreen() {
                         }
                     }
 
+                    // Server Transcription Card (optional server-side path with automatic fallback
+                    // to the local whisper.cpp/Vosk pipeline)
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(24.dp))
+                            .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(24.dp)),
+                        colors = CardDefaults.cardColors(containerColor = SleekSurface)
+                    ) {
+                        Column(modifier = Modifier.padding(20.dp)) {
+                            Text(
+                                text = Localization.getString("settings_header_server", uiLanguage),
+                                color = SleekPrimary,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = Localization.getString("settings_desc_server", uiLanguage),
+                                color = SleekText.copy(alpha = 0.6f),
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp
+                            )
+                            Spacer(modifier = Modifier.height(14.dp))
+
+                            var serverUrlText by remember { mutableStateOf(settingsManager.serverUrl) }
+                            OutlinedTextField(
+                                value = serverUrlText,
+                                onValueChange = {
+                                    serverUrlText = it
+                                    settingsManager.serverUrl = it
+                                },
+                                placeholder = {
+                                    Text(
+                                        text = Localization.getString("settings_server_url_hint", uiLanguage),
+                                        color = SleekText.copy(alpha = 0.4f),
+                                        fontSize = 14.sp
+                                    )
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("server_url_input"),
+                                shape = RoundedCornerShape(16.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = SleekPrimary,
+                                    unfocusedBorderColor = Color.Transparent,
+                                    focusedContainerColor = SleekInnerSurface,
+                                    unfocusedContainerColor = SleekInnerSurface,
+                                    focusedTextColor = SleekText,
+                                    unfocusedTextColor = SleekText
+                                ),
+                                singleLine = true
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            var isTestingConnection by remember { mutableStateOf(false) }
+                            var serverModels by remember { mutableStateOf<List<com.example.engine.ServerTranscriptionEngine.ServerModel>>(emptyList()) }
+                            var hasTestedConnection by remember { mutableStateOf(false) }
+                            val serverCoroutineScope = rememberCoroutineScope()
+
+                            Button(
+                                onClick = {
+                                    if (!isTestingConnection) {
+                                        isTestingConnection = true
+                                        serverCoroutineScope.launch {
+                                            try {
+                                                val models = com.example.engine.ServerTranscriptionEngine().fetchModels(serverUrlText)
+                                                serverModels = models
+                                                hasTestedConnection = true
+                                                if (models.isEmpty()) {
+                                                    Toast.makeText(context, Localization.getString("toast_server_no_models", uiLanguage), Toast.LENGTH_LONG).show()
+                                                } else {
+                                                    Toast.makeText(context, Localization.getString("toast_server_connected", uiLanguage), Toast.LENGTH_SHORT).show()
+                                                }
+                                            } catch (e: Exception) {
+                                                hasTestedConnection = true
+                                                Toast.makeText(
+                                                    context,
+                                                    "${Localization.getString("toast_server_connection_failed", uiLanguage)}: ${e.message}",
+                                                    Toast.LENGTH_LONG
+                                                ).show()
+                                            } finally {
+                                                isTestingConnection = false
+                                            }
+                                        }
+                                    }
+                                },
+                                enabled = !isTestingConnection && serverUrlText.isNotBlank(),
+                                colors = ButtonDefaults.buttonColors(containerColor = SleekPrimary, contentColor = SleekButtonText),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Text(
+                                    text = if (isTestingConnection) {
+                                        Localization.getString("btn_testing_connection", uiLanguage)
+                                    } else {
+                                        Localization.getString("btn_test_connection", uiLanguage)
+                                    },
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            if (serverModels.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text(
+                                    text = Localization.getString("settings_server_model_label", uiLanguage),
+                                    color = SleekText,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                var selectedServerModel by remember { mutableStateOf(settingsManager.serverModel) }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    serverModels.forEach { serverModel ->
+                                        val isSelected = selectedServerModel == serverModel.id
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(if (isSelected) SleekPrimary else SleekInnerSurface)
+                                                .clickable {
+                                                    selectedServerModel = serverModel.id
+                                                    settingsManager.serverModel = serverModel.id
+                                                }
+                                                .padding(vertical = 10.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = serverModel.label,
+                                                color = if (isSelected) SleekButtonText else SleekText,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                textAlign = TextAlign.Center,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                }
+                            } else if (hasTestedConnection) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = Localization.getString("settings_server_no_models_hint", uiLanguage),
+                                    color = SleekText.copy(alpha = 0.5f),
+                                    fontSize = 12.sp
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(16.dp))
+                            HorizontalDivider(color = Color.White.copy(alpha = 0.05f))
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = Localization.getString("settings_server_prefer_toggle_label", uiLanguage),
+                                        color = SleekPrimary,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = Localization.getString("settings_server_prefer_toggle_desc", uiLanguage),
+                                        color = SleekText.copy(alpha = 0.6f),
+                                        fontSize = 12.sp,
+                                        lineHeight = 16.sp
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(16.dp))
+                                Switch(
+                                    checked = preferServerTranscription,
+                                    onCheckedChange = { checked ->
+                                        preferServerTranscription = checked
+                                        settingsManager.preferServerTranscription = checked
+                                    },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = SleekButtonText,
+                                        checkedTrackColor = SleekPrimary,
+                                        uncheckedThumbColor = SleekText.copy(alpha = 0.4f),
+                                        uncheckedTrackColor = SleekInnerSurface
+                                    )
+                                )
+                            }
+                        }
+                    }
+
                     // Notification Mode Toggle Card
                     Card(
                         modifier = Modifier
@@ -1053,7 +1253,16 @@ fun MainScreen() {
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text(Localization.getString("system_info_security", uiLanguage), color = SleekText.copy(alpha = 0.6f), fontSize = 12.sp)
-                                Text(Localization.getString("system_info_offline", uiLanguage), color = SleekPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = if (preferServerTranscription) {
+                                        Localization.getString("system_info_cloud", uiLanguage)
+                                    } else {
+                                        Localization.getString("system_info_offline", uiLanguage)
+                                    },
+                                    color = SleekPrimary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
                     }
@@ -1063,7 +1272,8 @@ fun MainScreen() {
         }
     }
 
-    if (showOnboarding) {
+    // A server-only user shouldn't be forced through the local-model download wizard.
+    if (showOnboarding && !preferServerTranscription) {
         var downloadProgress by remember { mutableStateOf(-1f) }
         val scope = rememberCoroutineScope()
         

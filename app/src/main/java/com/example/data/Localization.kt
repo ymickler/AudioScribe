@@ -80,7 +80,19 @@ object Localization {
             "cancel_dialog_btn_cancel" to "Yes, cancel",
             "btn_show_more" to "Show More",
             "btn_show_less" to "Show Less",
-            "overlay_model_label" to "Model:"
+            "overlay_model_label" to "Model:",
+            "settings_header_server" to "Server Transcription (Optional)",
+            "settings_desc_server" to "Offload transcription to a self-hosted server for faster or higher-quality results. Falls back to the local offline engine automatically if the server is unreachable.",
+            "settings_server_url_hint" to "Server URL, e.g. http://192.168.1.10:8000",
+            "btn_test_connection" to "Test Connection",
+            "btn_testing_connection" to "Testing...",
+            "toast_server_connected" to "Connected to server",
+            "toast_server_no_models" to "Connected, but no models were returned",
+            "toast_server_connection_failed" to "Connection failed",
+            "settings_server_model_label" to "Server Model:",
+            "settings_server_no_models_hint" to "No models available. Test the connection to load the list.",
+            "settings_server_prefer_toggle_label" to "Prefer Server Transcription",
+            "settings_server_prefer_toggle_desc" to "Try the server first for every transcription and only use the local offline engine as a fallback."
         ),
         "de" to mapOf(
             "app_name" to "AudioScribe",
@@ -154,7 +166,19 @@ object Localization {
             "cancel_dialog_btn_cancel" to "Ja, abbrechen",
             "btn_show_more" to "Mehr anzeigen",
             "btn_show_less" to "Weniger anzeigen",
-            "overlay_model_label" to "Modell:"
+            "overlay_model_label" to "Modell:",
+            "settings_header_server" to "Server-Transkription (Optional)",
+            "settings_desc_server" to "Lagere die Transkription an einen selbst gehosteten Server aus, für schnellere oder qualitativ bessere Ergebnisse. Fällt automatisch auf die lokale Offline-Engine zurück, wenn der Server nicht erreichbar ist.",
+            "settings_server_url_hint" to "Server-URL, z.B. http://192.168.1.10:8000",
+            "btn_test_connection" to "Verbindung testen",
+            "btn_testing_connection" to "Teste...",
+            "toast_server_connected" to "Mit Server verbunden",
+            "toast_server_no_models" to "Verbunden, aber keine Modelle erhalten",
+            "toast_server_connection_failed" to "Verbindung fehlgeschlagen",
+            "settings_server_model_label" to "Server-Modell:",
+            "settings_server_no_models_hint" to "Keine Modelle verfügbar. Teste die Verbindung, um die Liste zu laden.",
+            "settings_server_prefer_toggle_label" to "Server-Transkription bevorzugen",
+            "settings_server_prefer_toggle_desc" to "Versucht bei jeder Transkription zuerst den Server und nutzt die lokale Offline-Engine nur als Rückfalloption."
         )
     )
 

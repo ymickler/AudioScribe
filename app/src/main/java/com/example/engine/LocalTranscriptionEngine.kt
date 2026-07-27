@@ -19,10 +19,12 @@ class LocalTranscriptionEngine(
     private val downloader = ModelDownloader(context)
     private val converter = AudioConverter()
     private val settingsManager = SettingsManager(context)
+    private val serverEngine = ServerTranscriptionEngine()
 
     interface TranscriptionCallback {
         fun onStart()
         fun onModelResolved(modelType: ModelDownloader.ModelType) {}
+        fun onServerModelResolved(model: ServerTranscriptionEngine.ServerModel) {}
         fun onProgress(progress: Float)
         fun onPartialResult(text: String)
         fun onComplete(fullText: String)
@@ -36,6 +38,7 @@ class LocalTranscriptionEngine(
     ): kotlinx.coroutines.Job {
         return CoroutineScope(dispatcher).launch {
             var convertedWavFile: File? = null
+            var tempInputFile: File? = null
             try {
                 callback.onStart()
 
@@ -64,6 +67,54 @@ class LocalTranscriptionEngine(
                     return@launch
                 }
 
+                // 1. Copy URI to a temporary file. This happens up-front (before any local model
+                // resolution) so that a server-only user - who may never have downloaded a local
+                // model - can still have their audio transcribed via the server path below.
+                val tempInput = File(context.cacheDir, "input_audio_${System.currentTimeMillis()}.tmp")
+                context.contentResolver.openInputStream(audioUri)?.use { input ->
+                    FileOutputStream(tempInput).use { output ->
+                        input.copyTo(output)
+                    }
+                } ?: run {
+                    callback.onError("Failed to read audio file")
+                    return@launch
+                }
+                tempInputFile = tempInput
+
+                // 2. Optional server-side transcription path, with automatic fallback to the
+                // local pipeline below on any failure. An explicit modelOverride (from the
+                // overlay service's "switch model" action) always means "use this specific local
+                // model", so the server is skipped entirely in that case.
+                if (settingsManager.preferServerTranscription && modelOverride == null) {
+                    val serverUrl = settingsManager.serverUrl
+                    try {
+                        if (serverEngine.healthCheck(serverUrl)) {
+                            val serverModelId = settingsManager.serverModel
+                            callback.onServerModelResolved(ServerTranscriptionEngine.ServerModel(serverModelId, serverModelId))
+
+                            val serverText = serverEngine.transcribe(
+                                baseUrl = serverUrl,
+                                model = serverModelId,
+                                audioFile = tempInput,
+                                language = langCode,
+                                onProgress = { progress -> callback.onProgress(progress) }
+                            )
+
+                            callback.onComplete(serverText)
+                            return@launch
+                        }
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) {
+                            throw e
+                        }
+                        // Server path failed for any reason (unreachable, timeout, bad response,
+                        // etc.) - silently fall back to the local whisper.cpp/Vosk pipeline below
+                        // instead of surfacing a hard error to the user.
+                        Log.w(tag, "Server transcription unavailable, falling back to local engine", e)
+                    }
+                }
+
+                // 3. Local (offline) model resolution
                 val modelType = modelOverride ?: when {
                     engineType == "whisper" -> {
                         when (settingsManager.whisperModelSize) {
@@ -85,26 +136,14 @@ class LocalTranscriptionEngine(
 
                 val modelPath = downloader.getModelPath(modelType)
 
-                // 1. Copy URI to a temporary file
-                val tempInput = File(context.cacheDir, "input_audio_${System.currentTimeMillis()}.tmp")
-                context.contentResolver.openInputStream(audioUri)?.use { input ->
-                    FileOutputStream(tempInput).use { output ->
-                        input.copyTo(output)
-                    }
-                } ?: run {
-                    callback.onError("Failed to read audio file")
-                    return@launch
-                }
-
-                // 2. Convert to 16kHz WAV
+                // 4. Convert to 16kHz WAV
                 val wavPath = converter.convertToWav(tempInput.absolutePath, context.cacheDir)
-                tempInput.delete()
-                
+
                 convertedWavFile = File(wavPath)
 
-                // 3. Transcribe
+                // 5. Transcribe
                 val engine: STTEngine = if (modelType.engine == "whisper") WhisperEngineImpl() else VoskEngineImpl()
-                
+
                 val fullText = engine.transcribe(
                     context = context,
                     audioFile = convertedWavFile,
@@ -112,7 +151,7 @@ class LocalTranscriptionEngine(
                     onProgress = { progress -> callback.onProgress(progress) },
                     onPartial = { partial -> callback.onPartialResult(partial) }
                 )
-                
+
                 callback.onComplete(fullText)
 
             } catch (e: Exception) {
@@ -122,6 +161,7 @@ class LocalTranscriptionEngine(
                 Log.e(tag, "Error transcribing audio file", e)
                 callback.onError(e.message ?: "Unknown offline transcription error")
             } finally {
+                tempInputFile?.delete()
                 convertedWavFile?.delete()
             }
         }

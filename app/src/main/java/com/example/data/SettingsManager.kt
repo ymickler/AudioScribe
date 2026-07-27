@@ -15,6 +15,9 @@ class SettingsManager(context: Context) {
         private const val KEY_SHOW_AS_NOTIFICATION = "show_as_notification"
         private const val KEY_STT_ENGINE = "stt_engine"
         private const val KEY_WHISPER_MODEL_SIZE = "whisper_model_size"
+        private const val KEY_SERVER_URL = "server_url"
+        private const val KEY_PREFER_SERVER_TRANSCRIPTION = "prefer_server_transcription"
+        private const val KEY_SERVER_MODEL = "server_model"
     }
 
     var language: String
@@ -44,6 +47,18 @@ class SettingsManager(context: Context) {
     var whisperModelSize: String
         get() = prefs.getString(KEY_WHISPER_MODEL_SIZE, "tiny") ?: "tiny"
         set(value) = prefs.edit().putString(KEY_WHISPER_MODEL_SIZE, value).apply()
+
+    var serverUrl: String
+        get() = prefs.getString(KEY_SERVER_URL, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_SERVER_URL, value).apply()
+
+    var preferServerTranscription: Boolean
+        get() = prefs.getBoolean(KEY_PREFER_SERVER_TRANSCRIPTION, false)
+        set(value) = prefs.edit().putBoolean(KEY_PREFER_SERVER_TRANSCRIPTION, value).apply()
+
+    var serverModel: String
+        get() = prefs.getString(KEY_SERVER_MODEL, "tiny") ?: "tiny"
+        set(value) = prefs.edit().putString(KEY_SERVER_MODEL, value).apply()
 
     fun getTargetLanguageCode(): String {
         val selected = language

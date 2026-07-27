@@ -59,6 +59,7 @@ import com.example.DependencyProvider
 import com.example.data.TranscriptionEntity
 import com.example.engine.LocalTranscriptionEngine
 import com.example.engine.ModelDownloader
+import com.example.engine.ServerTranscriptionEngine
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.SleekBackground
 import com.example.ui.theme.SleekInnerSurface
@@ -99,6 +100,7 @@ class TranscriptionOverlayService : Service() {
         var isError: Boolean = false,
         var errorMsg: String = "",
         var currentModelType: ModelDownloader.ModelType? = null,
+        var isServerAttempt: Boolean = false,
         var savedEntityId: Int? = null,
         var savedTimestamp: Long? = null,
         var activeJob: kotlinx.coroutines.Job? = null
@@ -240,6 +242,17 @@ class TranscriptionOverlayService : Service() {
             override fun onModelResolved(modelType: ModelDownloader.ModelType) {
                 if (sessionId != currentSessionId) return
                 item.currentModelType = modelType
+                // Reached only when the local pipeline actually runs (either the server path was
+                // never attempted, or it was attempted and failed and control fell through to the
+                // local model resolution), so any earlier "server attempt" flag no longer reflects
+                // what's actually happening.
+                item.isServerAttempt = false
+                updateQueueItem(item)
+            }
+
+            override fun onServerModelResolved(model: ServerTranscriptionEngine.ServerModel) {
+                if (sessionId != currentSessionId) return
+                item.isServerAttempt = true
                 updateQueueItem(item)
             }
 
@@ -247,6 +260,7 @@ class TranscriptionOverlayService : Service() {
                 if (sessionId != currentSessionId) return
                 val isWhisper = (item.currentModelType?.engine ?: settings.sttEngine) == "whisper"
                 item.status = when {
+                    item.isServerAttempt -> "Transcribing via server... (${(progress * 100).toInt()}%)"
                     isWhisper -> {
                         when {
                             progress < 0.15f -> "Loading Whisper model..."
@@ -381,6 +395,10 @@ class TranscriptionOverlayService : Service() {
             activeItem.text = ""
             activeItem.progress = 0f
             activeItem.currentModelType = nextModel
+            // An explicit model switch always targets a specific local model (LocalTranscriptionEngine
+            // skips the server path whenever a modelOverride is supplied), so the status text must
+            // no longer claim the server is being used.
+            activeItem.isServerAttempt = false
             updateQueueItem(activeItem)
 
             isProcessingQueue = false
