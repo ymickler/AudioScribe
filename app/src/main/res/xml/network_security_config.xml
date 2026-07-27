@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+        The optional server-transcription feature talks to a user-provided, self-hosted
+        server address (LAN IP, Tailscale IP, etc.) that is unknown at build time and is
+        typically plain HTTP, not TLS. Android blocks cleartext traffic by default since
+        targetSdk 28+, so it must be explicitly permitted here for that feature to work at
+        all - the base config below applies app-wide since the destination can't be
+        enumerated in advance.
+    -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
