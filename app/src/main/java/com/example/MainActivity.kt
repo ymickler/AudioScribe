@@ -1150,26 +1150,31 @@ fun MainScreen() {
                                             }
                                             Spacer(modifier = Modifier.width(10.dp))
                                             Column(modifier = Modifier.weight(1f)) {
-                                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                                    Text(
-                                                        text = serverModel.label,
-                                                        color = SleekText,
-                                                        fontSize = 13.sp,
-                                                        fontWeight = FontWeight.Bold
-                                                    )
+                                                // Label and size share one Column instead of a Row: when the
+                                                // label wraps to 2 lines on a narrow screen, a size badge sharing
+                                                // a Row with it would sit vertically centered against the whole
+                                                // wrapped block instead of next to the first line, looking
+                                                // misaligned - folding the size into the description line avoids
+                                                // that entirely. An explicit lineHeight (missing before) is what
+                                                // actually caused the oversized gaps above/below wrapped labels.
+                                                Text(
+                                                    text = serverModel.label,
+                                                    color = SleekText,
+                                                    fontSize = 13.sp,
+                                                    lineHeight = 16.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                val description = buildString {
+                                                    append(serverModel.speedNote)
                                                     if (serverModel.sizeMb > 0) {
-                                                        Spacer(modifier = Modifier.width(6.dp))
-                                                        Text(
-                                                            text = "~${serverModel.sizeMb} MB",
-                                                            color = SleekText.copy(alpha = 0.45f),
-                                                            fontSize = 10.sp
-                                                        )
+                                                        if (isNotEmpty()) append(" · ")
+                                                        append("~${serverModel.sizeMb} MB")
                                                     }
                                                 }
-                                                if (serverModel.speedNote.isNotBlank()) {
-                                                    Spacer(modifier = Modifier.height(3.dp))
+                                                if (description.isNotBlank()) {
+                                                    Spacer(modifier = Modifier.height(2.dp))
                                                     Text(
-                                                        text = serverModel.speedNote,
+                                                        text = description,
                                                         color = SleekText.copy(alpha = 0.65f),
                                                         fontSize = 11.sp,
                                                         lineHeight = 14.sp
