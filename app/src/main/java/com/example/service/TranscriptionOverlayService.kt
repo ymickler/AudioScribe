@@ -188,6 +188,13 @@ class TranscriptionOverlayService : Service() {
             }
 
             enqueueAudio(audioUriString)
+
+            // Sharing another voice note while one is already running just reset the
+            // notification back to the generic "Preparing..." placeholder above - if the
+            // already-running item is actually being tracked via notification (global
+            // notification mode, or moved to background), immediately overwrite that with its
+            // real current status instead of leaving a stale/misleading placeholder up.
+            updateOverallProgressNotification()
         } else {
             if (transcriptionQueue.isEmpty()) {
                 stopSelf()
