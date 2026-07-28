@@ -207,6 +207,17 @@ class TranscriptionOverlayService : Service() {
     }
 
     private fun checkAndProcessQueue() {
+        // Safety net: `isProcessingQueue` is only ever meant to be true while some item's
+        // coroutine is genuinely running. If a job dies in a way that skips both onComplete
+        // and onError (e.g. an exception thrown by the callback itself, uncaught inside the
+        // launch{} block), the flag could otherwise stay stuck true forever, wedging every
+        // future item behind it at "Waiting in queue..." with nothing visibly happening. If
+        // nothing in the queue actually has an active job, the flag is lying - fix it instead
+        // of trusting it.
+        if (isProcessingQueue && transcriptionQueue.none { it.activeJob != null }) {
+            android.util.Log.w("TranscriptionOverlayService", "isProcessingQueue was true with no active job - resetting")
+            isProcessingQueue = false
+        }
         if (isProcessingQueue) return
         val nextItem = transcriptionQueue.firstOrNull { !it.isCompleted && !it.isError && it.activeJob == null }
         if (nextItem != null) {

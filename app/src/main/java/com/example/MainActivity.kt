@@ -71,6 +71,7 @@ import com.example.ui.theme.SleekHeader
 import com.example.ui.theme.SleekInnerSurface
 import com.example.ui.theme.SleekPrimary
 import com.example.ui.theme.SleekSurface
+import com.example.ui.theme.SleekSuccess
 import com.example.ui.theme.SleekText
 import com.example.ui.theme.SleekButtonText
 import kotlinx.coroutines.delay
@@ -987,7 +988,7 @@ fun MainScreen() {
 
                             if (serverUrlText.isNotBlank()) {
                                 val (dotColor, statusLabel) = when (liveConnectionStatus) {
-                                    true -> SleekPrimary to Localization.getString("status_server_connected", uiLanguage)
+                                    true -> SleekSuccess to Localization.getString("status_server_connected", uiLanguage)
                                     false -> MaterialTheme.colorScheme.error to Localization.getString("status_server_disconnected", uiLanguage)
                                     null -> SleekText.copy(alpha = 0.35f) to Localization.getString("status_server_checking", uiLanguage)
                                 }
