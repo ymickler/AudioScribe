@@ -37,30 +37,51 @@ class ShareActivity : ComponentActivity() {
             return
         }
 
-        // Handle the incoming share intent
-        if (intent?.action == Intent.ACTION_SEND) {
-            val audioUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
-            }
-
-            if (audioUri != null) {
-                // Start the overlay service with the audio Uri
-                val serviceIntent = Intent(this, TranscriptionOverlayService::class.java).apply {
-                    putExtra(TranscriptionOverlayService.EXTRA_AUDIO_URI, audioUri.toString())
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(serviceIntent)
+        // Handle the incoming share intent - a single file (ACTION_SEND) or a multi-select
+        // share (ACTION_SEND_MULTIPLE). Either way, each URI is enqueued into the same
+        // TranscriptionOverlayService queue, which already processes items sequentially.
+        when (intent?.action) {
+            Intent.ACTION_SEND -> {
+                val audioUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
                 } else {
-                    startService(serviceIntent)
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
                 }
-            } else {
-                Toast.makeText(this, "No shared audio found", Toast.LENGTH_SHORT).show()
+
+                if (audioUri != null) {
+                    enqueueToTranscriptionService(audioUri)
+                } else {
+                    Toast.makeText(this, "No shared audio found", Toast.LENGTH_SHORT).show()
+                }
+            }
+            Intent.ACTION_SEND_MULTIPLE -> {
+                val audioUris = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM)
+                }
+
+                if (!audioUris.isNullOrEmpty()) {
+                    audioUris.forEach { uri -> enqueueToTranscriptionService(uri) }
+                } else {
+                    Toast.makeText(this, "No shared audio found", Toast.LENGTH_SHORT).show()
+                }
             }
         }
 
         finish()
+    }
+
+    private fun enqueueToTranscriptionService(audioUri: Uri) {
+        val serviceIntent = Intent(this, TranscriptionOverlayService::class.java).apply {
+            putExtra(TranscriptionOverlayService.EXTRA_AUDIO_URI, audioUri.toString())
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
+        }
     }
 }
