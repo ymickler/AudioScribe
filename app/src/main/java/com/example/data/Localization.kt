@@ -101,6 +101,7 @@ object Localization {
             "status_server_connected" to "Connected",
             "status_server_disconnected" to "Not reachable",
             "status_server_checking" to "Checking...",
+            "btn_move_to_background" to "Move to background (show as notification)",
         ),
         "de" to mapOf(
             "app_name" to "AudioScribe",
@@ -195,6 +196,7 @@ object Localization {
             "status_server_connected" to "Verbunden",
             "status_server_disconnected" to "Nicht erreichbar",
             "status_server_checking" to "Prüfe...",
+            "btn_move_to_background" to "In den Hintergrund verschieben (als Benachrichtigung anzeigen)",
         )
     )
 

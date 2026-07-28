@@ -104,6 +104,10 @@ class TranscriptionOverlayService : Service() {
         var serverFallbackReason: String? = null,
         var startedAtMs: Long = 0L,
         var durationLabel: String = "",
+        // Per-item, not global: lets the user send just this one running transcription to the
+        // background (shown via notification instead) without touching the persistent
+        // showAsNotification setting, so any later share still opens the overlay as normal.
+        var hiddenFromOverlay: Boolean = false,
         var savedEntityId: Int? = null,
         var savedTimestamp: Long? = null,
         var activeJob: kotlinx.coroutines.Job? = null
@@ -225,7 +229,12 @@ class TranscriptionOverlayService : Service() {
             processQueueItem(nextItem)
         } else {
             val settings = DependencyProvider.getSettingsManager(this)
-            if (settings.showAsNotification && transcriptionQueue.all { it.isCompleted || it.isError }) {
+            // Also stop if every item has been individually moved to the background: with
+            // nothing left visible in the overlay, there's no "Close All" button left for the
+            // user to dismiss it with, so the service must self-stop the same way real
+            // notification mode does once everything is done.
+            val nothingLeftToShow = settings.showAsNotification || transcriptionQueue.all { it.hiddenFromOverlay }
+            if (nothingLeftToShow && transcriptionQueue.all { it.isCompleted || it.isError }) {
                 stopSelf()
             }
         }
@@ -398,6 +407,29 @@ class TranscriptionOverlayService : Service() {
         }
     }
 
+    // Sends just this one running transcription to the background: dismisses the overlay
+    // Card (if nothing else is left visible) and switches its progress/completion reporting
+    // over to the persistent notification, without touching the global showAsNotification
+    // setting or cancelling the underlying job - it keeps running exactly as it was.
+    private fun moveToBackground(itemId: String) {
+        val item = transcriptionQueue.find { it.id == itemId } ?: return
+        item.hiddenFromOverlay = true
+        updateQueueItem(item)
+
+        if (transcriptionQueue.none { !it.hiddenFromOverlay }) {
+            if (composeView != null) {
+                try {
+                    windowManager?.removeView(composeView)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+                composeView = null
+            }
+        }
+
+        updateOverallProgressNotification()
+    }
+
     private fun cancelOngoingTranscription() {
         val activeItem = transcriptionQueue.find { it.activeJob != null }
         if (activeItem != null) {
@@ -461,11 +493,14 @@ class TranscriptionOverlayService : Service() {
 
     private fun updateOverallProgressNotification() {
         val settings = DependencyProvider.getSettingsManager(this)
-        if (!settings.showAsNotification) return
 
         val activeIndex = transcriptionQueue.indexOfFirst { it.activeJob != null }
         if (activeIndex == -1) return
         val activeItem = transcriptionQueue[activeIndex]
+        // Global notification mode always updates the notification; in overlay mode, only do so
+        // for an item the user explicitly moved to the background - other overlay items keep
+        // relying on the Card UI instead.
+        if (!settings.showAsNotification && !activeItem.hiddenFromOverlay) return
 
         val totalCount = transcriptionQueue.size
         val currentNum = activeIndex + 1
@@ -561,7 +596,10 @@ class TranscriptionOverlayService : Service() {
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp
                         )
-                        val queueCount = transcriptionQueue.size
+                        // Items moved to the background aren't rendered here at all - they're
+                        // only tracked in the notification now - so the queue count reflects
+                        // what's actually visible in this Card.
+                        val queueCount = transcriptionQueue.count { !it.hiddenFromOverlay }
                         val statusLabel = if (queueCount > 0) {
                             if (settings.uiLanguage == "de") {
                                 "Warteschlange: $queueCount ${if (queueCount == 1) "Eintrag" else "Einträge"}"
@@ -619,7 +657,8 @@ class TranscriptionOverlayService : Service() {
                         .heightIn(max = 350.dp)
                         .verticalScroll(rememberScrollState())
                 ) {
-                    transcriptionQueue.forEachIndexed { index, item ->
+                    val visibleItems = transcriptionQueue.filter { !it.hiddenFromOverlay }
+                    visibleItems.forEachIndexed { index, item ->
                         if (index > 0) {
                             HorizontalDivider(
                                 color = Color.White.copy(alpha = 0.05f),
@@ -688,6 +727,20 @@ class TranscriptionOverlayService : Service() {
                                 )
                             }
                         }
+                    }
+                }
+
+                if (item.activeJob != null && !item.isCompleted && !item.isError) {
+                    IconButton(
+                        onClick = { moveToBackground(item.id) },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowDown,
+                            contentDescription = com.example.data.Localization.getString("btn_move_to_background", settings.uiLanguage),
+                            tint = SleekText.copy(alpha = 0.5f),
+                            modifier = Modifier.size(16.dp)
+                        )
                     }
                 }
 
