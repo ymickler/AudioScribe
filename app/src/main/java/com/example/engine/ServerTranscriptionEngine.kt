@@ -1,7 +1,9 @@
 package com.example.engine
 
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -42,9 +44,17 @@ class ServerTranscriptionEngine(private val client: OkHttpClient = OkHttpClient(
 
     private val tag = "ServerTranscriptionEngine"
 
-    suspend fun healthCheck(baseUrl: String, timeoutMs: Long = 2000): Boolean {
-        if (baseUrl.isBlank()) return false
-        return try {
+    // Every public function here wraps its body in withContext(Dispatchers.IO): OkHttp's
+    // call.enqueue() itself never blocks the calling thread, but once the coroutine resumes
+    // inside executeAsync() it continues on whatever dispatcher the *caller* happened to be
+    // using (e.g. rememberCoroutineScope() defaults to Main) - and reading the response body
+    // (response.body?.string()) is real blocking socket I/O, which throws
+    // NetworkOnMainThreadException if that resumption lands back on the main thread. Forcing
+    // Dispatchers.IO here makes every call in this class safe regardless of which dispatcher
+    // the caller launched from, instead of relying on every call site to remember Dispatchers.IO.
+    suspend fun healthCheck(baseUrl: String, timeoutMs: Long = 2000): Boolean = withContext(Dispatchers.IO) {
+        if (baseUrl.isBlank()) return@withContext false
+        try {
             val healthClient = client.newBuilder()
                 .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
                 .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
@@ -69,14 +79,14 @@ class ServerTranscriptionEngine(private val client: OkHttpClient = OkHttpClient(
     // network failure or HTTP error used to be indistinguishable from "connected fine, server
     // just has zero models" - a genuinely empty/missing `models` array in a 2xx response is
     // the only case that still returns emptyList() normally.
-    suspend fun fetchModels(baseUrl: String): List<ServerModel> {
-        if (baseUrl.isBlank()) return emptyList()
+    suspend fun fetchModels(baseUrl: String): List<ServerModel> = withContext(Dispatchers.IO) {
+        if (baseUrl.isBlank()) return@withContext emptyList()
         val request = Request.Builder()
             .url("${normalizeBaseUrl(baseUrl)}/v1/models")
             .get()
             .build()
         val response = executeAsync(client, request)
-        return response.use { resp ->
+        response.use { resp ->
             if (!resp.isSuccessful) {
                 throw IOException("Server responded with HTTP ${resp.code}")
             }
@@ -102,7 +112,7 @@ class ServerTranscriptionEngine(private val client: OkHttpClient = OkHttpClient(
         audioFile: File,
         language: String,
         onProgress: (Float) -> Unit
-    ): String {
+    ): String = withContext(Dispatchers.IO) {
         onProgress(0.1f)
 
         val audioMediaType = "audio/*".toMediaTypeOrNull()
@@ -122,7 +132,7 @@ class ServerTranscriptionEngine(private val client: OkHttpClient = OkHttpClient(
         val response = executeAsync(client, request)
         onProgress(0.85f)
 
-        return response.use { resp ->
+        response.use { resp ->
             if (!resp.isSuccessful) {
                 val errorBody = try { resp.body?.string() } catch (e: Exception) { null }
                 throw Exception("Server transcription failed with HTTP ${resp.code}${if (!errorBody.isNullOrBlank()) ": $errorBody" else ""}")
