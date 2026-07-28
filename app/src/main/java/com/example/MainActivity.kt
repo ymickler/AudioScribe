@@ -1016,9 +1016,10 @@ fun MainScreen() {
                                                 }
                                             } catch (e: Exception) {
                                                 hasTestedConnection = true
+                                                val detail = e.message ?: e::class.simpleName ?: "unknown error"
                                                 Toast.makeText(
                                                     context,
-                                                    "${Localization.getString("toast_server_connection_failed", uiLanguage)}: ${e.message}",
+                                                    "${Localization.getString("toast_server_connection_failed", uiLanguage)}: $detail",
                                                     Toast.LENGTH_LONG
                                                 ).show()
                                             } finally {
