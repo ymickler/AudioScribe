@@ -121,11 +121,17 @@ class ServerTranscriptionEngine(private val client: OkHttpClient = OkHttpClient(
         }
     }
 
+    // Real transcription can legitimately take well beyond OkHttp's default 10s read timeout
+    // (a cold model load alone measured 25-30s against our own reference server) - using the
+    // plain default client here was the actual bug behind a user-visible symptom: the server
+    // attempt would show progress, then silently time out and fall back to local a few seconds
+    // in, even though the server would have finished successfully given more time.
     suspend fun transcribe(
         baseUrl: String,
         model: String,
         audioFile: File,
         language: String,
+        timeoutMs: Long = 120_000,
         onProgress: (Float) -> Unit
     ): String = withContext(Dispatchers.IO) {
         onProgress(0.1f)
@@ -143,8 +149,14 @@ class ServerTranscriptionEngine(private val client: OkHttpClient = OkHttpClient(
             .post(requestBody)
             .build()
 
+        val transcribeClient = client.newBuilder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+            .writeTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+            .build()
+
         onProgress(0.3f)
-        val response = executeAsync(client, request)
+        val response = executeAsync(transcribeClient, request)
         onProgress(0.85f)
 
         response.use { resp ->
