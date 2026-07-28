@@ -221,22 +221,22 @@ class TranscriptionOverlayService : Service() {
 
     private fun processQueueItem(item: QueueItem) {
         isProcessingQueue = true
+        val settings = DependencyProvider.getSettingsManager(this)
         item.startedAtMs = System.currentTimeMillis()
-        item.status = "Preparing transcription..."
+        item.status = com.example.data.Localization.getString("status_preparing", settings.uiLanguage)
         item.progress = 0.05f
         updateQueueItem(item)
         updateOverallProgressNotification()
 
         val uri = Uri.parse(item.cachedUriString ?: item.originalUriString)
         val engine = LocalTranscriptionEngine(this)
-        val settings = DependencyProvider.getSettingsManager(this)
         val targetLanguage = settings.getTargetLanguageCode()
 
         val sessionId = ++currentSessionId
         val job = engine.transcribeAudio(uri, object : LocalTranscriptionEngine.TranscriptionCallback {
             override fun onStart() {
                 if (sessionId != currentSessionId) return
-                item.status = "Preparing transcription..."
+                item.status = com.example.data.Localization.getString("status_preparing", settings.uiLanguage)
                 item.progress = 0.05f
                 updateQueueItem(item)
                 updateOverallProgressNotification()

@@ -96,6 +96,9 @@ object Localization {
             "settings_server_prefer_toggle_desc" to "Try the server first for every transcription and only use the local offline engine as a fallback.",
             "badge_server" to "Server",
             "status_preparing" to "Preparing transcription...",
+            "status_server_connected" to "Connected",
+            "status_server_disconnected" to "Not reachable",
+            "status_server_checking" to "Checking...",
         ),
         "de" to mapOf(
             "app_name" to "AudioScribe",
@@ -179,9 +182,15 @@ object Localization {
             "toast_server_no_models" to "Verbunden, aber keine Modelle erhalten",
             "toast_server_connection_failed" to "Verbindung fehlgeschlagen",
             "settings_server_model_label" to "Server-Modell:",
+            "settings_server_model_guidance" to "Kleinere Modelle sind schneller, aber weniger genau; größere Modelle sind langsamer, aber präziser. Steht keine Beschreibung dabei, ist die mittlere Option ein guter Standard.",
             "settings_server_no_models_hint" to "Keine Modelle verfügbar. Teste die Verbindung, um die Liste zu laden.",
             "settings_server_prefer_toggle_label" to "Server-Transkription bevorzugen",
-            "settings_server_prefer_toggle_desc" to "Versucht bei jeder Transkription zuerst den Server und nutzt die lokale Offline-Engine nur als Rückfalloption."
+            "settings_server_prefer_toggle_desc" to "Versucht bei jeder Transkription zuerst den Server und nutzt die lokale Offline-Engine nur als Rückfalloption.",
+            "badge_server" to "Server",
+            "status_preparing" to "Bereite Transkription vor...",
+            "status_server_connected" to "Verbunden",
+            "status_server_disconnected" to "Nicht erreichbar",
+            "status_server_checking" to "Prüfe...",
         )
     )
 

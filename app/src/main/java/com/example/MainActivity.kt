@@ -73,6 +73,7 @@ import com.example.ui.theme.SleekPrimary
 import com.example.ui.theme.SleekSurface
 import com.example.ui.theme.SleekText
 import com.example.ui.theme.SleekButtonText
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -966,6 +967,47 @@ fun MainScreen() {
                             Spacer(modifier = Modifier.height(14.dp))
 
                             var serverUrlText by remember { mutableStateOf(settingsManager.serverUrl) }
+
+                            // Periodic live connection indicator, independent of the manual
+                            // "Test Connection" button below - re-checks in the background
+                            // every 20s so the user always knows the current state at a glance
+                            // instead of only finding out when they press the button.
+                            var liveConnectionStatus by remember { mutableStateOf<Boolean?>(null) }
+                            LaunchedEffect(serverUrlText) {
+                                if (serverUrlText.isBlank()) {
+                                    liveConnectionStatus = null
+                                    return@LaunchedEffect
+                                }
+                                val healthEngine = com.example.engine.ServerTranscriptionEngine()
+                                while (true) {
+                                    liveConnectionStatus = healthEngine.healthCheck(serverUrlText)
+                                    delay(20_000)
+                                }
+                            }
+
+                            if (serverUrlText.isNotBlank()) {
+                                val (dotColor, statusLabel) = when (liveConnectionStatus) {
+                                    true -> SleekPrimary to Localization.getString("status_server_connected", uiLanguage)
+                                    false -> MaterialTheme.colorScheme.error to Localization.getString("status_server_disconnected", uiLanguage)
+                                    null -> SleekText.copy(alpha = 0.35f) to Localization.getString("status_server_checking", uiLanguage)
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(dotColor)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = statusLabel,
+                                        color = SleekText.copy(alpha = 0.7f),
+                                        fontSize = 11.sp
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(10.dp))
+                            }
+
                             OutlinedTextField(
                                 value = serverUrlText,
                                 onValueChange = {
