@@ -94,6 +94,34 @@ class ServerTranscriptionEngineTest {
     }
 
     @Test
+    fun `fetchModels parses optional sizeMb, ramMb and speedNote metadata`() = runTest {
+        val body = """{"models": [{"id": "german-small", "label": "German Small", "sizeMb": 950, "ramMb": 1200, "speedNote": "good balance"}]}"""
+        val client = fakeClient { request -> jsonResponse(request, 200, body) }
+        val engine = ServerTranscriptionEngine(client)
+
+        val models = engine.fetchModels("http://fake-server:8000")
+
+        assertEquals(1, models.size)
+        assertEquals(
+            ServerTranscriptionEngine.ServerModel("german-small", "German Small", sizeMb = 950, ramMb = 1200, speedNote = "good balance"),
+            models[0]
+        )
+    }
+
+    @Test
+    fun `fetchModels defaults optional metadata when a server omits it`() = runTest {
+        val body = """{"models": [{"id": "tiny", "label": "Tiny"}]}"""
+        val client = fakeClient { request -> jsonResponse(request, 200, body) }
+        val engine = ServerTranscriptionEngine(client)
+
+        val model = engine.fetchModels("http://fake-server:8000").single()
+
+        assertEquals(0, model.sizeMb)
+        assertEquals(0, model.ramMb)
+        assertTrue(model.speedNote.isEmpty())
+    }
+
+    @Test
     fun `fetchModels returns empty list when models array is missing`() = runTest {
         val client = fakeClient { request -> jsonResponse(request, 200, "{}") }
         val engine = ServerTranscriptionEngine(client)

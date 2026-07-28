@@ -25,6 +25,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -1051,36 +1052,88 @@ fun MainScreen() {
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold
                                 )
-                                Spacer(modifier = Modifier.height(6.dp))
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = Localization.getString("settings_server_model_guidance", uiLanguage),
+                                    color = SleekText.copy(alpha = 0.55f),
+                                    fontSize = 11.sp,
+                                    lineHeight = 14.sp
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
 
                                 var selectedServerModel by remember { mutableStateOf(settingsManager.serverModel) }
-                                Row(
+                                Column(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     serverModels.forEach { serverModel ->
                                         val isSelected = selectedServerModel == serverModel.id
-                                        Box(
+                                        Row(
                                             modifier = Modifier
-                                                .weight(1f)
-                                                .clip(RoundedCornerShape(12.dp))
-                                                .background(if (isSelected) SleekPrimary else SleekInnerSurface)
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(14.dp))
+                                                .background(if (isSelected) SleekPrimary.copy(alpha = 0.15f) else SleekInnerSurface)
+                                                .border(
+                                                    width = 1.dp,
+                                                    color = if (isSelected) SleekPrimary else Color.Transparent,
+                                                    shape = RoundedCornerShape(14.dp)
+                                                )
                                                 .clickable {
                                                     selectedServerModel = serverModel.id
                                                     settingsManager.serverModel = serverModel.id
                                                 }
-                                                .padding(vertical = 10.dp),
-                                            contentAlignment = Alignment.Center
+                                                .padding(12.dp),
+                                            verticalAlignment = Alignment.Top
                                         ) {
-                                            Text(
-                                                text = serverModel.label,
-                                                color = if (isSelected) SleekButtonText else SleekText,
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                textAlign = TextAlign.Center,
-                                                maxLines = 2,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .padding(top = 2.dp)
+                                                    .size(16.dp)
+                                                    .clip(CircleShape)
+                                                    .border(
+                                                        width = 2.dp,
+                                                        color = if (isSelected) SleekPrimary else SleekText.copy(alpha = 0.35f),
+                                                        shape = CircleShape
+                                                    ),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                if (isSelected) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(8.dp)
+                                                            .clip(CircleShape)
+                                                            .background(SleekPrimary)
+                                                    )
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Text(
+                                                        text = serverModel.label,
+                                                        color = SleekText,
+                                                        fontSize = 13.sp,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                    if (serverModel.sizeMb > 0) {
+                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                        Text(
+                                                            text = "~${serverModel.sizeMb} MB",
+                                                            color = SleekText.copy(alpha = 0.45f),
+                                                            fontSize = 10.sp
+                                                        )
+                                                    }
+                                                }
+                                                if (serverModel.speedNote.isNotBlank()) {
+                                                    Spacer(modifier = Modifier.height(3.dp))
+                                                    Text(
+                                                        text = serverModel.speedNote,
+                                                        color = SleekText.copy(alpha = 0.65f),
+                                                        fontSize = 11.sp,
+                                                        lineHeight = 14.sp
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }

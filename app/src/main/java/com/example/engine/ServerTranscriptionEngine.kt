@@ -40,7 +40,16 @@ import kotlin.coroutines.resumeWithException
 // hitting the network.
 class ServerTranscriptionEngine(private val client: OkHttpClient = OkHttpClient()) {
 
-    data class ServerModel(val id: String, val label: String)
+    // sizeMb/ramMb/speedNote are optional metadata a compatible server may provide (our own
+    // audioscribe-server does); default to 0/"" so a third-party server that only returns
+    // id+label still parses fine - the UI simply hides whatever isn't present.
+    data class ServerModel(
+        val id: String,
+        val label: String,
+        val sizeMb: Int = 0,
+        val ramMb: Int = 0,
+        val speedNote: String = ""
+    )
 
     private val tag = "ServerTranscriptionEngine"
 
@@ -101,7 +110,13 @@ class ServerTranscriptionEngine(private val client: OkHttpClient = OkHttpClient(
                 val id = obj.optString("id", "")
                 if (id.isEmpty()) return@mapNotNull null
                 val label = obj.optString("label", id)
-                ServerModel(id, label)
+                ServerModel(
+                    id = id,
+                    label = label,
+                    sizeMb = obj.optInt("sizeMb", 0),
+                    ramMb = obj.optInt("ramMb", 0),
+                    speedNote = obj.optString("speedNote", "")
+                )
             }
         }
     }

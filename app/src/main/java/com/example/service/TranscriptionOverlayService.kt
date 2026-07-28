@@ -101,6 +101,8 @@ class TranscriptionOverlayService : Service() {
         var errorMsg: String = "",
         var currentModelType: ModelDownloader.ModelType? = null,
         var isServerAttempt: Boolean = false,
+        var startedAtMs: Long = 0L,
+        var durationLabel: String = "",
         var savedEntityId: Int? = null,
         var savedTimestamp: Long? = null,
         var activeJob: kotlinx.coroutines.Job? = null
@@ -219,7 +221,8 @@ class TranscriptionOverlayService : Service() {
 
     private fun processQueueItem(item: QueueItem) {
         isProcessingQueue = true
-        item.status = "Loading Offline Engine..."
+        item.startedAtMs = System.currentTimeMillis()
+        item.status = "Preparing transcription..."
         item.progress = 0.05f
         updateQueueItem(item)
         updateOverallProgressNotification()
@@ -233,7 +236,7 @@ class TranscriptionOverlayService : Service() {
         val job = engine.transcribeAudio(uri, object : LocalTranscriptionEngine.TranscriptionCallback {
             override fun onStart() {
                 if (sessionId != currentSessionId) return
-                item.status = "Loading Offline Engine..."
+                item.status = "Preparing transcription..."
                 item.progress = 0.05f
                 updateQueueItem(item)
                 updateOverallProgressNotification()
@@ -289,6 +292,7 @@ class TranscriptionOverlayService : Service() {
                 item.text = fullText
                 item.progress = 1.0f
                 item.status = "Completed"
+                item.durationLabel = formatDuration(System.currentTimeMillis() - item.startedAtMs)
                 item.isCompleted = true
                 item.activeJob = null
                 updateQueueItem(item)
@@ -309,7 +313,7 @@ class TranscriptionOverlayService : Service() {
                         updateQueueItem(item)
 
                         CoroutineScope(Dispatchers.Main).launch {
-                            showCompletedNotification(this@TranscriptionOverlayService, id.toInt(), fullText)
+                            showCompletedNotification(this@TranscriptionOverlayService, id.toInt(), fullText, item.durationLabel, item.isServerAttempt)
                             isProcessingQueue = false
                             checkAndProcessQueue()
                         }
@@ -411,6 +415,18 @@ class TranscriptionOverlayService : Service() {
                 "No other models installed"
             }
             Toast.makeText(this, toastMsg, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun formatDuration(ms: Long): String {
+        val clamped = ms.coerceAtLeast(0L)
+        val totalSeconds = clamped / 1000.0
+        return if (totalSeconds < 60) {
+            String.format(java.util.Locale.US, "%.1fs", totalSeconds)
+        } else {
+            val minutes = clamped / 60000
+            val seconds = (clamped % 60000) / 1000
+            String.format(java.util.Locale.US, "%d:%02d", minutes, seconds)
         }
     }
 
@@ -602,17 +618,38 @@ class TranscriptionOverlayService : Service() {
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     val statusText = when {
-                        item.isCompleted -> if (settings.uiLanguage == "de") "Abgeschlossen" else "Completed"
+                        item.isCompleted -> {
+                            val base = if (settings.uiLanguage == "de") "Abgeschlossen" else "Completed"
+                            if (item.durationLabel.isNotBlank()) "$base (${item.durationLabel})" else base
+                        }
                         item.isError -> if (settings.uiLanguage == "de") "Fehler" else "Failed"
                         item.activeJob != null -> item.status
                         else -> if (settings.uiLanguage == "de") "In Warteschlange..." else "Waiting in queue..."
                     }
-                    Text(
-                        text = statusText,
-                        color = if (item.isError) MaterialTheme.colorScheme.error else SleekPrimary,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = statusText,
+                            color = if (item.isError) MaterialTheme.colorScheme.error else SleekPrimary,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (item.isServerAttempt && !item.isError) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(SleekPrimary.copy(alpha = 0.18f))
+                                    .padding(horizontal = 6.dp, vertical = 1.dp)
+                            ) {
+                                Text(
+                                    text = com.example.data.Localization.getString("badge_server", settings.uiLanguage),
+                                    color = SleekPrimary,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
                 }
 
                 IconButton(
@@ -839,7 +876,11 @@ class TranscriptionOverlayService : Service() {
             val switchLabel = com.example.data.Localization.getString("notification_action_switch_model", settings.uiLanguage)
             
             val activeItem = transcriptionQueue.find { it.activeJob != null }
-            val activeModelName = activeItem?.currentModelType?.let { " (${it.displayLabel})" } ?: ""
+            val activeModelName = if (activeItem?.isServerAttempt == true) {
+                " (${com.example.data.Localization.getString("badge_server", settings.uiLanguage)})"
+            } else {
+                activeItem?.currentModelType?.let { " (${it.displayLabel})" } ?: ""
+            }
             val fullTitle = title + activeModelName
 
             val builder = NotificationCompat.Builder(this@TranscriptionOverlayService, CHANNEL_ID)
@@ -864,12 +905,24 @@ class TranscriptionOverlayService : Service() {
         }
     }
 
-    private fun showCompletedNotification(context: Context, id: Int, fullText: String) {
+    private fun showCompletedNotification(
+        context: Context,
+        id: Int,
+        fullText: String,
+        durationLabel: String = "",
+        isServerAttempt: Boolean = false
+    ) {
         val channelId = CHANNEL_ID
         val settings = DependencyProvider.getSettingsManager(context)
         val uiLanguage = settings.uiLanguage
-        
-        val title = com.example.data.Localization.getString("notification_title_completed", uiLanguage)
+
+        val baseTitle = com.example.data.Localization.getString("notification_title_completed", uiLanguage)
+        val badge = com.example.data.Localization.getString("badge_server", uiLanguage)
+        val suffixParts = listOfNotNull(
+            durationLabel.takeIf { it.isNotBlank() },
+            badge.takeIf { isServerAttempt }
+        )
+        val title = if (suffixParts.isEmpty()) baseTitle else "$baseTitle (${suffixParts.joinToString(" · ")})"
         val btnCopyText = com.example.data.Localization.getString("notification_action_copy", uiLanguage)
         val btnShareText = com.example.data.Localization.getString("notification_action_share", uiLanguage)
 

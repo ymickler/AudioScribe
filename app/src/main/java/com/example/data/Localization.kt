@@ -90,9 +90,12 @@ object Localization {
             "toast_server_no_models" to "Connected, but no models were returned",
             "toast_server_connection_failed" to "Connection failed",
             "settings_server_model_label" to "Server Model:",
+            "settings_server_model_guidance" to "Smaller models are faster but less accurate; larger models are slower but more precise. If your server description doesn't say, start with the middle option as a balanced default.",
             "settings_server_no_models_hint" to "No models available. Test the connection to load the list.",
             "settings_server_prefer_toggle_label" to "Prefer Server Transcription",
-            "settings_server_prefer_toggle_desc" to "Try the server first for every transcription and only use the local offline engine as a fallback."
+            "settings_server_prefer_toggle_desc" to "Try the server first for every transcription and only use the local offline engine as a fallback.",
+            "badge_server" to "Server",
+            "status_preparing" to "Preparing transcription...",
         ),
         "de" to mapOf(
             "app_name" to "AudioScribe",
