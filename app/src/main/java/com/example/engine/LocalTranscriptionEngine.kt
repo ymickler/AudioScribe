@@ -25,6 +25,10 @@ class LocalTranscriptionEngine(
         fun onStart()
         fun onModelResolved(modelType: ModelDownloader.ModelType) {}
         fun onServerModelResolved(model: ServerTranscriptionEngine.ServerModel) {}
+        // Fired when server transcription was preferred but we're about to fall back to
+        // local: "unreachable" if the health check itself failed (server never attempted),
+        // "error" if the health check passed but transcription failed even after a retry.
+        fun onServerFallback(reason: String) {}
         fun onProgress(progress: Float)
         fun onPartialResult(text: String)
         fun onComplete(fullText: String)
@@ -82,35 +86,52 @@ class LocalTranscriptionEngine(
                 tempInputFile = tempInput
 
                 // 2. Optional server-side transcription path, with automatic fallback to the
-                // local pipeline below on any failure. An explicit modelOverride (from the
-                // overlay service's "switch model" action) always means "use this specific local
-                // model", so the server is skipped entirely in that case.
+                // local pipeline below. An explicit modelOverride (from the overlay service's
+                // "switch model" action) always means "use this specific local model", so the
+                // server is skipped entirely in that case.
+                //
+                // Two distinct failure modes are surfaced differently rather than treating
+                // every failure identically:
+                // - The server was never reachable at all (health check failed) -> fall back
+                //   immediately, no point retrying a connection that isn't there.
+                // - The health check passed but transcription itself failed (e.g. the
+                //   connection drops mid-request) -> retry once before giving up, since a
+                //   reachable server failing mid-flight is more likely a transient blip than a
+                //   real outage.
+                // Either way, onServerFallback tells the UI *why* local ended up being used
+                // despite the user preferring the server, instead of looking identical to a
+                // plain "server not preferred" local run.
                 if (settingsManager.preferServerTranscription && modelOverride == null) {
                     val serverUrl = settingsManager.serverUrl
-                    try {
-                        if (serverEngine.healthCheck(serverUrl)) {
-                            val serverModelId = settingsManager.serverModel
-                            callback.onServerModelResolved(ServerTranscriptionEngine.ServerModel(serverModelId, serverModelId))
+                    if (serverEngine.healthCheck(serverUrl)) {
+                        var serverSucceeded = false
+                        for (attempt in 1..2) {
+                            try {
+                                val serverModelId = settingsManager.serverModel
+                                callback.onServerModelResolved(ServerTranscriptionEngine.ServerModel(serverModelId, serverModelId))
 
-                            val serverText = serverEngine.transcribe(
-                                baseUrl = serverUrl,
-                                model = serverModelId,
-                                audioFile = tempInput,
-                                language = langCode,
-                                onProgress = { progress -> callback.onProgress(progress) }
-                            )
+                                val serverText = serverEngine.transcribe(
+                                    baseUrl = serverUrl,
+                                    model = serverModelId,
+                                    audioFile = tempInput,
+                                    language = langCode,
+                                    onProgress = { progress -> callback.onProgress(progress) }
+                                )
 
-                            callback.onComplete(serverText)
-                            return@launch
+                                callback.onComplete(serverText)
+                                serverSucceeded = true
+                                break
+                            } catch (e: Exception) {
+                                if (e is kotlinx.coroutines.CancellationException) {
+                                    throw e
+                                }
+                                Log.w(tag, "Server transcription attempt $attempt failed", e)
+                            }
                         }
-                    } catch (e: Exception) {
-                        if (e is kotlinx.coroutines.CancellationException) {
-                            throw e
-                        }
-                        // Server path failed for any reason (unreachable, timeout, bad response,
-                        // etc.) - silently fall back to the local whisper.cpp/Vosk pipeline below
-                        // instead of surfacing a hard error to the user.
-                        Log.w(tag, "Server transcription unavailable, falling back to local engine", e)
+                        if (serverSucceeded) return@launch
+                        callback.onServerFallback("error")
+                    } else {
+                        callback.onServerFallback("unreachable")
                     }
                 }
 

@@ -101,6 +101,7 @@ class TranscriptionOverlayService : Service() {
         var errorMsg: String = "",
         var currentModelType: ModelDownloader.ModelType? = null,
         var isServerAttempt: Boolean = false,
+        var serverFallbackReason: String? = null,
         var startedAtMs: Long = 0L,
         var durationLabel: String = "",
         var savedEntityId: Int? = null,
@@ -267,6 +268,14 @@ class TranscriptionOverlayService : Service() {
             override fun onServerModelResolved(model: ServerTranscriptionEngine.ServerModel) {
                 if (sessionId != currentSessionId) return
                 item.isServerAttempt = true
+                item.serverFallbackReason = null
+                updateQueueItem(item)
+            }
+
+            override fun onServerFallback(reason: String) {
+                if (sessionId != currentSessionId) return
+                item.isServerAttempt = false
+                item.serverFallbackReason = reason
                 updateQueueItem(item)
             }
 
@@ -330,7 +339,8 @@ class TranscriptionOverlayService : Service() {
                                 fullText,
                                 item.durationLabel,
                                 item.isServerAttempt,
-                                item.currentModelType?.displayLabel
+                                item.currentModelType?.displayLabel,
+                                item.serverFallbackReason
                             )
                             isProcessingQueue = false
                             checkAndProcessQueue()
@@ -419,8 +429,9 @@ class TranscriptionOverlayService : Service() {
             activeItem.currentModelType = nextModel
             // An explicit model switch always targets a specific local model (LocalTranscriptionEngine
             // skips the server path whenever a modelOverride is supplied), so the status text must
-            // no longer claim the server is being used.
+            // no longer claim the server is being used, and any earlier fallback reason no longer applies.
             activeItem.isServerAttempt = false
+            activeItem.serverFallbackReason = null
             updateQueueItem(activeItem)
 
             isProcessingQueue = false
@@ -656,6 +667,8 @@ class TranscriptionOverlayService : Service() {
                         // finished transcription stays visible, not just during processing.
                         val sourceBadge = when {
                             item.isServerAttempt -> com.example.data.Localization.getString("badge_server", settings.uiLanguage)
+                            item.serverFallbackReason == "unreachable" -> com.example.data.Localization.getString("badge_local_fallback_unreachable", settings.uiLanguage)
+                            item.serverFallbackReason == "error" -> com.example.data.Localization.getString("badge_local_fallback_error", settings.uiLanguage)
                             item.currentModelType != null -> item.currentModelType?.displayLabel
                             else -> null
                         }
@@ -902,10 +915,14 @@ class TranscriptionOverlayService : Service() {
             val switchLabel = com.example.data.Localization.getString("notification_action_switch_model", settings.uiLanguage)
             
             val activeItem = transcriptionQueue.find { it.activeJob != null }
-            val activeModelName = if (activeItem?.isServerAttempt == true) {
-                " (${com.example.data.Localization.getString("badge_server", settings.uiLanguage)})"
-            } else {
-                activeItem?.currentModelType?.let { " (${it.displayLabel})" } ?: ""
+            val activeModelName = when {
+                activeItem?.isServerAttempt == true ->
+                    " (${com.example.data.Localization.getString("badge_server", settings.uiLanguage)})"
+                activeItem?.serverFallbackReason == "unreachable" ->
+                    " (${com.example.data.Localization.getString("badge_local_fallback_unreachable", settings.uiLanguage)})"
+                activeItem?.serverFallbackReason == "error" ->
+                    " (${com.example.data.Localization.getString("badge_local_fallback_error", settings.uiLanguage)})"
+                else -> activeItem?.currentModelType?.let { " (${it.displayLabel})" } ?: ""
             }
             val fullTitle = title + activeModelName
 
@@ -937,7 +954,8 @@ class TranscriptionOverlayService : Service() {
         fullText: String,
         durationLabel: String = "",
         isServerAttempt: Boolean = false,
-        localModelLabel: String? = null
+        localModelLabel: String? = null,
+        serverFallbackReason: String? = null
     ) {
         val channelId = CHANNEL_ID
         val settings = DependencyProvider.getSettingsManager(context)
@@ -945,11 +963,14 @@ class TranscriptionOverlayService : Service() {
 
         val baseTitle = com.example.data.Localization.getString("notification_title_completed", uiLanguage)
         // Shown for both the server and local case, not just server, so a completed
-        // notification always says where the transcription came from.
-        val sourceLabel = if (isServerAttempt) {
-            com.example.data.Localization.getString("badge_server", uiLanguage)
-        } else {
-            localModelLabel
+        // notification always says where the transcription came from - and if server was
+        // preferred but unavailable, says so explicitly instead of looking like an ordinary
+        // local run.
+        val sourceLabel = when {
+            isServerAttempt -> com.example.data.Localization.getString("badge_server", uiLanguage)
+            serverFallbackReason == "unreachable" -> com.example.data.Localization.getString("badge_local_fallback_unreachable", uiLanguage)
+            serverFallbackReason == "error" -> com.example.data.Localization.getString("badge_local_fallback_error", uiLanguage)
+            else -> localModelLabel
         }
         val suffixParts = listOfNotNull(
             durationLabel.takeIf { it.isNotBlank() },
