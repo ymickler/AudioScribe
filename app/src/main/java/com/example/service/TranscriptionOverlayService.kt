@@ -324,7 +324,14 @@ class TranscriptionOverlayService : Service() {
                         updateQueueItem(item)
 
                         CoroutineScope(Dispatchers.Main).launch {
-                            showCompletedNotification(this@TranscriptionOverlayService, id.toInt(), fullText, item.durationLabel, item.isServerAttempt)
+                            showCompletedNotification(
+                                this@TranscriptionOverlayService,
+                                id.toInt(),
+                                fullText,
+                                item.durationLabel,
+                                item.isServerAttempt,
+                                item.currentModelType?.displayLabel
+                            )
                             isProcessingQueue = false
                             checkAndProcessQueue()
                         }
@@ -644,7 +651,15 @@ class TranscriptionOverlayService : Service() {
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold
                         )
-                        if (item.isServerAttempt && !item.isError) {
+                        // Shown both while running and after completion (item.isServerAttempt /
+                        // currentModelType aren't cleared on completion), so the source of a
+                        // finished transcription stays visible, not just during processing.
+                        val sourceBadge = when {
+                            item.isServerAttempt -> com.example.data.Localization.getString("badge_server", settings.uiLanguage)
+                            item.currentModelType != null -> item.currentModelType?.displayLabel
+                            else -> null
+                        }
+                        if (sourceBadge != null && !item.isError) {
                             Spacer(modifier = Modifier.width(6.dp))
                             Box(
                                 modifier = Modifier
@@ -653,7 +668,7 @@ class TranscriptionOverlayService : Service() {
                                     .padding(horizontal = 6.dp, vertical = 1.dp)
                             ) {
                                 Text(
-                                    text = com.example.data.Localization.getString("badge_server", settings.uiLanguage),
+                                    text = sourceBadge,
                                     color = SleekPrimary,
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.Bold
@@ -921,17 +936,24 @@ class TranscriptionOverlayService : Service() {
         id: Int,
         fullText: String,
         durationLabel: String = "",
-        isServerAttempt: Boolean = false
+        isServerAttempt: Boolean = false,
+        localModelLabel: String? = null
     ) {
         val channelId = CHANNEL_ID
         val settings = DependencyProvider.getSettingsManager(context)
         val uiLanguage = settings.uiLanguage
 
         val baseTitle = com.example.data.Localization.getString("notification_title_completed", uiLanguage)
-        val badge = com.example.data.Localization.getString("badge_server", uiLanguage)
+        // Shown for both the server and local case, not just server, so a completed
+        // notification always says where the transcription came from.
+        val sourceLabel = if (isServerAttempt) {
+            com.example.data.Localization.getString("badge_server", uiLanguage)
+        } else {
+            localModelLabel
+        }
         val suffixParts = listOfNotNull(
             durationLabel.takeIf { it.isNotBlank() },
-            badge.takeIf { isServerAttempt }
+            sourceLabel
         )
         val title = if (suffixParts.isEmpty()) baseTitle else "$baseTitle (${suffixParts.joinToString(" · ")})"
         val btnCopyText = com.example.data.Localization.getString("notification_action_copy", uiLanguage)

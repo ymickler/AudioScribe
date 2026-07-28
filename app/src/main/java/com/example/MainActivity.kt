@@ -968,11 +968,15 @@ fun MainScreen() {
                             Spacer(modifier = Modifier.height(14.dp))
 
                             var serverUrlText by remember { mutableStateOf(settingsManager.serverUrl) }
+                            var serverModels by remember { mutableStateOf<List<com.example.engine.ServerTranscriptionEngine.ServerModel>>(emptyList()) }
+                            var hasTestedConnection by remember { mutableStateOf(false) }
 
                             // Periodic live connection indicator, independent of the manual
                             // "Test Connection" button below - re-checks in the background
                             // every 20s so the user always knows the current state at a glance
-                            // instead of only finding out when they press the button.
+                            // instead of only finding out when they press the button. Also keeps
+                            // the model picker populated automatically whenever the server is
+                            // reachable, rather than only ever showing it after a manual press.
                             var liveConnectionStatus by remember { mutableStateOf<Boolean?>(null) }
                             LaunchedEffect(serverUrlText) {
                                 if (serverUrlText.isBlank()) {
@@ -981,7 +985,18 @@ fun MainScreen() {
                                 }
                                 val healthEngine = com.example.engine.ServerTranscriptionEngine()
                                 while (true) {
-                                    liveConnectionStatus = healthEngine.healthCheck(serverUrlText)
+                                    val healthy = healthEngine.healthCheck(serverUrlText)
+                                    liveConnectionStatus = healthy
+                                    if (healthy && serverModels.isEmpty()) {
+                                        try {
+                                            serverModels = healthEngine.fetchModels(serverUrlText)
+                                            hasTestedConnection = true
+                                        } catch (e: Exception) {
+                                            // Swallowed here on purpose: this is a passive background
+                                            // refresh, not a user-initiated action - the manual "Test
+                                            // Connection" button is what surfaces errors explicitly.
+                                        }
+                                    }
                                     delay(20_000)
                                 }
                             }
@@ -1040,8 +1055,6 @@ fun MainScreen() {
                             Spacer(modifier = Modifier.height(12.dp))
 
                             var isTestingConnection by remember { mutableStateOf(false) }
-                            var serverModels by remember { mutableStateOf<List<com.example.engine.ServerTranscriptionEngine.ServerModel>>(emptyList()) }
-                            var hasTestedConnection by remember { mutableStateOf(false) }
                             val serverCoroutineScope = rememberCoroutineScope()
 
                             Button(
