@@ -1,4 +1,4 @@
-name: SnapScribe PR Preview Build
+name: AudioScribe PR Preview Build
 
 on:
   pull_request:

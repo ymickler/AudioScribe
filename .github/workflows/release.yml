@@ -1,4 +1,4 @@
-name: SnapScribe Release CI
+name: AudioScribe Release CI
 
 on:
   push:

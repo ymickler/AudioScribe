@@ -1,12 +1,12 @@
-# SnapScribe: AI Developer & Architecture Context
+# AudioScribe: AI Developer & Architecture Context
 
-This document provides a highly structured and detailed architectural overview of SnapScribe to help downstream AI coding assistants understand the codebase instantly and perform safe, modular enhancements.
+This document provides a highly structured and detailed architectural overview of AudioScribe to help downstream AI coding assistants understand the codebase instantly and perform safe, modular enhancements.
 
 ---
 
 ## 🏗️ 1. Architecture Overview
 
-SnapScribe is designed with a highly modular, clean **MVVM (Model-View-ViewModel)** architectural pattern. It is a strictly **offline-first** application utilizing native, local components for security and responsiveness.
+AudioScribe is designed with a highly modular, clean **MVVM (Model-View-ViewModel)** architectural pattern. It is **local-first by default**, with an optional self-hosted server transcription path (see section 2.B) that always falls back to the on-device engine.
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -44,9 +44,15 @@ SnapScribe is designed with a highly modular, clean **MVVM (Model-View-ViewModel
 
 ### B. Speech-to-Text Engine
 * **LocalTranscriptionEngine (`engine/LocalTranscriptionEngine.kt`):**
-  * Provides on-device offline voice processing using high-fidelity chunked speech segment synthesis.
+  * Orchestrates every transcription: optionally attempts the server path first (below), then always falls back to on-device whisper.cpp/Vosk processing.
   * Simulates real-time transcription progress (`onProgress`) and streams word tokens (`onPartialResult`) to mimic Whisper or native STT offline models realistically in testing.
-  * Detects simulation requests dynamically when receiving a URI formatted as `mock://audio/...`.
+  * Detects simulation requests dynamically when receiving a URI formatted as `mock://audio/...` (this path never attempts server transcription - it's a pure UI/local-flow test fixture).
+
+### B2. Optional Server Transcription (`engine/ServerTranscriptionEngine.kt`)
+* Talks to a self-hosted companion server (see the separate `audioscribe-server` project) over `GET /health`, `GET /v1/models`, `POST /v1/transcribe`.
+* Only attempted when `SettingsManager.preferServerTranscription` is true AND `LocalTranscriptionEngine.transcribeAudio`'s `modelOverride` is null (an explicit local model switch from the overlay always bypasses the server).
+* Flow: health check (short timeout) -> if reachable, transcribe (long timeout, retried once on failure) -> on any failure (unreachable, or failed even after retry), falls back to the local engine and reports *why* via `TranscriptionCallback.onServerFallback(reason)` (`"unreachable"` or `"error"`), surfaced as a distinct badge/notification text rather than looking like an ordinary local run.
+* All network calls run under `Dispatchers.IO` internally (not the caller's dispatcher) - `NetworkOnMainThreadException` was a real regression here once, worth being careful about if this file is touched again.
 
 ### C. SharedPreferences (`data/SettingsManager.kt`)
 Holds user selections dynamically:
@@ -54,12 +60,13 @@ Holds user selections dynamically:
 * `uiLanguage` (Application interface language).
 * `isEncryptionEnabled` (Enforces local storage encryption).
 * `showAsNotification` (Boolean toggle: True = Display transcription as status notification; False = Floating overlay window).
+* `serverUrl`, `preferServerTranscription`, `serverModel` (optional server transcription settings, see B2).
 
 ---
 
 ## 📱 3. Interaction Flows: Overlay vs. Notification Mode
 
-When an audio file is shared to SnapScribe via WhatsApp:
+When an audio file is shared to AudioScribe via WhatsApp:
 1. `ShareActivity.kt` intercepts the shared file.
 2. It fetches `SettingsManager.showAsNotification` to check the user's preferred layout.
 3. If **Overlay Mode** is active, it checks for system overlay permissions (`Settings.canDrawOverlays`) and launches `TranscriptionOverlayService.kt`.
@@ -79,7 +86,7 @@ When an audio file is shared to SnapScribe via WhatsApp:
 
 ## 🧪 4. Preview Sandbox (Testing inside AI Studio)
 
-Since browser-based Android streaming emulators cannot naturally share media files from third-party apps, SnapScribe features a **Preview Sandbox** panel:
+Since browser-based Android streaming emulators cannot naturally share media files from third-party apps, AudioScribe features a **Preview Sandbox** panel:
 * **Trigger:** Visible only in debug builds (`BuildConfig.DEBUG`).
 * **Implementation:** Standard item card injected gracefully at the top of the `History` screen's unified `LazyColumn` in `MainActivity.kt`.
 * **Action:** Clicking `"Simulate Shared Audio" / "Geteilte Sprachnachricht simulieren"` dispatches an intent containing a `mock://` Uri. This starts the complete background lifecycle of `TranscriptionOverlayService`, allowing the developer to test either the **Overlay HUD** or the **Expandable System Notifications** dynamically in real time.
@@ -88,7 +95,7 @@ Since browser-based Android streaming emulators cannot naturally share media fil
 
 ## 🌐 5. Localization (`data/Localization.kt`)
 
-SnapScribe utilizes an on-the-fly custom translation helper to prevent screen recreation/flickering issues. Add any new translation keys directly to the `translations` map inside `Localization.kt` to ensure uniform German and English updates.
+AudioScribe utilizes an on-the-fly custom translation helper to prevent screen recreation/flickering issues. Add any new translation keys directly to the `translations` map inside `Localization.kt` to ensure uniform German and English updates.
 
 ---
 
