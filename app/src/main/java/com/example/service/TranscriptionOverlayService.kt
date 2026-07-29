@@ -110,7 +110,12 @@ class TranscriptionOverlayService : Service() {
         var hiddenFromOverlay: Boolean = false,
         var savedEntityId: Int? = null,
         var savedTimestamp: Long? = null,
-        var activeJob: kotlinx.coroutines.Job? = null
+        var activeJob: kotlinx.coroutines.Job? = null,
+        // Independent of activeJob: tracks an eager, immediate server-transcription attempt for
+        // this item (see attemptServerEagerly), which runs concurrently with whatever else is
+        // in the sequential local-processing queue rather than waiting its turn. Only once this
+        // fails (or was never applicable) does the item enter the normal sequential queue.
+        var serverAttemptJob: kotlinx.coroutines.Job? = null
     )
 
     // Queue state observed by Compose
@@ -207,13 +212,141 @@ class TranscriptionOverlayService : Service() {
         val itemId = java.util.UUID.randomUUID().toString()
         val item = QueueItem(id = itemId, originalUriString = audioUriString)
         transcriptionQueue.add(item)
-        
+
         CoroutineScope(Dispatchers.IO).launch {
             val cachedUri = cacheAudioLocally(audioUriString) ?: audioUriString
             CoroutineScope(Dispatchers.Main).launch {
                 item.cachedUriString = cachedUri
                 updateQueueItem(item)
-                checkAndProcessQueue()
+                // If server transcription is preferred, try it immediately for this item -
+                // concurrently with whatever else is running - instead of waiting for every
+                // earlier item to finish first. That way the upload happens while connectivity
+                // is known-good right now, rather than being gated on local network conditions
+                // whenever this item's turn in a strictly sequential queue would otherwise come
+                // up (which could be minutes later for a later item in a multi-note batch).
+                val settings = DependencyProvider.getSettingsManager(this@TranscriptionOverlayService)
+                if (settings.preferServerTranscription) {
+                    attemptServerEagerly(item)
+                } else {
+                    checkAndProcessQueue()
+                }
+            }
+        }
+    }
+
+    // Runs a server transcription attempt for this one item right away, independent of the
+    // sequential local queue (isProcessingQueue only ever gates the local engine). On success,
+    // the item finishes exactly like a normal completion. On failure (unreachable, or failed
+    // even after a retry), it falls into the normal sequential local queue via
+    // checkAndProcessQueue(), passing skipServerAttempt=true so LocalTranscriptionEngine doesn't
+    // redundantly retry the server a second time.
+    private fun attemptServerEagerly(item: QueueItem) {
+        val settings = DependencyProvider.getSettingsManager(this)
+        val serverUrl = settings.serverUrl
+        val targetLanguage = settings.getTargetLanguageCode()
+        val uriString = item.cachedUriString ?: item.originalUriString
+
+        item.startedAtMs = System.currentTimeMillis()
+        item.status = com.example.data.Localization.getString("status_preparing", settings.uiLanguage)
+        updateQueueItem(item)
+
+        val job = CoroutineScope(Dispatchers.IO).launch {
+            var succeeded = false
+            try {
+                val serverEngine = ServerTranscriptionEngine()
+                if (serverEngine.healthCheck(serverUrl)) {
+                    for (attempt in 1..2) {
+                        try {
+                            val audioPath = Uri.parse(uriString).path
+                                ?: throw java.io.IOException("Cached audio file has no local path")
+                            val audioFile = File(audioPath)
+                            item.isServerAttempt = true
+                            item.serverFallbackReason = null
+                            updateQueueItem(item)
+
+                            val serverText = serverEngine.transcribe(
+                                baseUrl = serverUrl,
+                                model = settings.serverModel,
+                                audioFile = audioFile,
+                                language = targetLanguage,
+                                onProgress = { progress ->
+                                    item.progress = progress
+                                    item.status = "Transcribing via server... (${(progress * 100).toInt()}%)"
+                                    updateQueueItem(item)
+                                    updateOverallProgressNotification()
+                                }
+                            )
+
+                            finishItemSuccessfully(item, serverText, targetLanguage) {}
+                            succeeded = true
+                            break
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            android.util.Log.w("TranscriptionOverlayService", "Eager server attempt $attempt failed for ${item.id}", e)
+                        }
+                    }
+                    if (!succeeded) {
+                        item.isServerAttempt = false
+                        item.serverFallbackReason = "error"
+                    }
+                } else {
+                    item.isServerAttempt = false
+                    item.serverFallbackReason = "unreachable"
+                }
+            } finally {
+                item.serverAttemptJob = null
+                updateQueueItem(item)
+                if (!succeeded) {
+                    checkAndProcessQueue()
+                }
+            }
+        }
+        item.serverAttemptJob = job
+        updateQueueItem(item)
+    }
+
+    // Shared by the normal sequential queue's onComplete and the eager server path above, so
+    // both finish an item (save to history, show the completed notification) identically.
+    private fun finishItemSuccessfully(item: QueueItem, fullText: String, targetLanguage: String, onDone: () -> Unit) {
+        item.text = fullText
+        item.progress = 1.0f
+        item.status = "Completed"
+        item.durationLabel = formatDuration(System.currentTimeMillis() - item.startedAtMs)
+        item.isCompleted = true
+        item.activeJob = null
+        updateQueueItem(item)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val repository = DependencyProvider.getRepository(this@TranscriptionOverlayService)
+                val entity = TranscriptionEntity(
+                    id = item.savedEntityId ?: 0,
+                    audioUri = item.originalUriString,
+                    transcribedText = fullText,
+                    language = targetLanguage,
+                    timestamp = item.savedTimestamp ?: System.currentTimeMillis()
+                )
+                val id = repository.insert(entity)
+                item.savedEntityId = id.toInt()
+                item.savedTimestamp = entity.timestamp
+                updateQueueItem(item)
+
+                CoroutineScope(Dispatchers.Main).launch {
+                    showCompletedNotification(
+                        this@TranscriptionOverlayService,
+                        id.toInt(),
+                        fullText,
+                        item.durationLabel,
+                        item.isServerAttempt,
+                        item.currentModelType?.displayLabel,
+                        item.serverFallbackReason
+                    )
+                    onDone()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                CoroutineScope(Dispatchers.Main).launch { onDone() }
             }
         }
     }
@@ -231,7 +364,9 @@ class TranscriptionOverlayService : Service() {
             isProcessingQueue = false
         }
         if (isProcessingQueue) return
-        val nextItem = transcriptionQueue.firstOrNull { !it.isCompleted && !it.isError && it.activeJob == null }
+        // Items still under an eager server attempt (serverAttemptJob != null) are excluded -
+        // they're already being worked on, just not through this sequential path.
+        val nextItem = transcriptionQueue.firstOrNull { !it.isCompleted && !it.isError && it.activeJob == null && it.serverAttemptJob == null }
         if (nextItem != null) {
             processQueueItem(nextItem)
         } else {
@@ -325,49 +460,9 @@ class TranscriptionOverlayService : Service() {
 
             override fun onComplete(fullText: String) {
                 if (sessionId != currentSessionId) return
-                item.text = fullText
-                item.progress = 1.0f
-                item.status = "Completed"
-                item.durationLabel = formatDuration(System.currentTimeMillis() - item.startedAtMs)
-                item.isCompleted = true
-                item.activeJob = null
-                updateQueueItem(item)
-
-                CoroutineScope(Dispatchers.IO).launch {
-                    try {
-                        val repository = DependencyProvider.getRepository(this@TranscriptionOverlayService)
-                        val entity = TranscriptionEntity(
-                            id = item.savedEntityId ?: 0,
-                            audioUri = item.originalUriString,
-                            transcribedText = fullText,
-                            language = targetLanguage,
-                            timestamp = item.savedTimestamp ?: System.currentTimeMillis()
-                        )
-                        val id = repository.insert(entity)
-                        item.savedEntityId = id.toInt()
-                        item.savedTimestamp = entity.timestamp
-                        updateQueueItem(item)
-
-                        CoroutineScope(Dispatchers.Main).launch {
-                            showCompletedNotification(
-                                this@TranscriptionOverlayService,
-                                id.toInt(),
-                                fullText,
-                                item.durationLabel,
-                                item.isServerAttempt,
-                                item.currentModelType?.displayLabel,
-                                item.serverFallbackReason
-                            )
-                            isProcessingQueue = false
-                            checkAndProcessQueue()
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                        CoroutineScope(Dispatchers.Main).launch {
-                            isProcessingQueue = false
-                            checkAndProcessQueue()
-                        }
-                    }
+                finishItemSuccessfully(item, fullText, targetLanguage) {
+                    isProcessingQueue = false
+                    checkAndProcessQueue()
                 }
             }
 
@@ -384,7 +479,7 @@ class TranscriptionOverlayService : Service() {
                 isProcessingQueue = false
                 checkAndProcessQueue()
             }
-        }, item.currentModelType)
+        }, item.currentModelType, skipServerAttempt = true)
 
         item.activeJob = job
         updateQueueItem(item)
@@ -399,10 +494,12 @@ class TranscriptionOverlayService : Service() {
 
     private fun cancelQueueItem(itemId: String) {
         val item = transcriptionQueue.find { it.id == itemId } ?: return
+        val wasLocallyActive = item.activeJob != null
         item.activeJob?.cancel()
+        item.serverAttemptJob?.cancel()
         transcriptionQueue.remove(item)
 
-        if (item.activeJob != null) {
+        if (wasLocallyActive) {
             isProcessingQueue = false
             checkAndProcessQueue()
         }
@@ -438,7 +535,7 @@ class TranscriptionOverlayService : Service() {
     }
 
     private fun cancelOngoingTranscription() {
-        val activeItem = transcriptionQueue.find { it.activeJob != null }
+        val activeItem = transcriptionQueue.find { it.activeJob != null || it.serverAttemptJob != null }
         if (activeItem != null) {
             cancelQueueItem(activeItem.id)
         } else {
@@ -698,7 +795,7 @@ class TranscriptionOverlayService : Service() {
                             if (item.durationLabel.isNotBlank()) "$base (${item.durationLabel})" else base
                         }
                         item.isError -> if (settings.uiLanguage == "de") "Fehler" else "Failed"
-                        item.activeJob != null -> item.status
+                        item.activeJob != null || item.serverAttemptJob != null -> item.status
                         else -> if (settings.uiLanguage == "de") "In Warteschlange..." else "Waiting in queue..."
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -766,7 +863,7 @@ class TranscriptionOverlayService : Service() {
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            if (item.activeJob != null && !item.isCompleted && !item.isError) {
+            if ((item.activeJob != null || item.serverAttemptJob != null) && !item.isCompleted && !item.isError) {
                 LinearProgressIndicator(
                     progress = { item.progress },
                     modifier = Modifier
@@ -1112,7 +1209,10 @@ class TranscriptionOverlayService : Service() {
             }
             composeView = null
         }
-        transcriptionQueue.forEach { it.activeJob?.cancel() }
+        transcriptionQueue.forEach {
+            it.activeJob?.cancel()
+            it.serverAttemptJob?.cancel()
+        }
         transcriptionQueue.clear()
         cachedLocalAudioFile?.delete()
         lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)

@@ -38,7 +38,11 @@ class LocalTranscriptionEngine(
     fun transcribeAudio(
         audioUri: Uri,
         callback: TranscriptionCallback,
-        modelOverride: ModelDownloader.ModelType? = null
+        modelOverride: ModelDownloader.ModelType? = null,
+        // Set by callers that already attempted the server themselves ahead of this call (see
+        // TranscriptionOverlayService's eager per-item server dispatch) so it isn't retried a
+        // second time here - this call becomes purely the local fallback in that case.
+        skipServerAttempt: Boolean = false
     ): kotlinx.coroutines.Job {
         return CoroutineScope(dispatcher).launch {
             var convertedWavFile: File? = null
@@ -101,7 +105,7 @@ class LocalTranscriptionEngine(
                 // Either way, onServerFallback tells the UI *why* local ended up being used
                 // despite the user preferring the server, instead of looking identical to a
                 // plain "server not preferred" local run.
-                if (settingsManager.preferServerTranscription && modelOverride == null) {
+                if (settingsManager.preferServerTranscription && modelOverride == null && !skipServerAttempt) {
                     val serverUrl = settingsManager.serverUrl
                     if (serverEngine.healthCheck(serverUrl)) {
                         var serverSucceeded = false
