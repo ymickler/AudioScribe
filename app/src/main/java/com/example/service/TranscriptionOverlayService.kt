@@ -297,9 +297,12 @@ class TranscriptionOverlayService : Service() {
             } finally {
                 item.serverAttemptJob = null
                 updateQueueItem(item)
-                if (!succeeded) {
-                    checkAndProcessQueue()
-                }
+                // Always re-check the queue, not just on failure: this was the other half of
+                // the stuck-notification bug - on a *successful* eager server transcription,
+                // checkAndProcessQueue() was never called, so the service never noticed the
+                // queue was fully drained and never self-stopped (clearing the stale
+                // notification) or picked up any remaining local-only item.
+                checkAndProcessQueue()
             }
         }
         item.serverAttemptJob = job
@@ -598,7 +601,12 @@ class TranscriptionOverlayService : Service() {
     private fun updateOverallProgressNotification() {
         val settings = DependencyProvider.getSettingsManager(this)
 
-        val activeIndex = transcriptionQueue.indexOfFirst { it.activeJob != null }
+        // Must also match items still in an eager server attempt (serverAttemptJob), not just
+        // activeJob (the sequential local queue) - missing this was the actual bug behind a
+        // report of the persistent notification getting stuck on "Preparing transcription..."
+        // forever: for a server-preferred item, activeJob stays null the whole time, so this
+        // function silently no-op'd and never once updated the notification with real progress.
+        val activeIndex = transcriptionQueue.indexOfFirst { it.activeJob != null || it.serverAttemptJob != null }
         if (activeIndex == -1) return
         val activeItem = transcriptionQueue[activeIndex]
         // Global notification mode always updates the notification; in overlay mode, only do so
