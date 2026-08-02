@@ -115,7 +115,12 @@ class TranscriptionOverlayService : Service() {
         // this item (see attemptServerEagerly), which runs concurrently with whatever else is
         // in the sequential local-processing queue rather than waiting its turn. Only once this
         // fails (or was never applicable) does the item enter the normal sequential queue.
-        var serverAttemptJob: kotlinx.coroutines.Job? = null
+        var serverAttemptJob: kotlinx.coroutines.Job? = null,
+        // Set only while a server transcription for this item is actually in flight (cleared
+        // again once it finishes, fails, or falls back) - lets cancelQueueItem tell the server
+        // which model's container to restart, since aborting the HTTP call alone doesn't stop
+        // the CPU-bound transcription already running server-side.
+        var serverModelId: String? = null
     )
 
     // Queue state observed by Compose
@@ -247,6 +252,11 @@ class TranscriptionOverlayService : Service() {
         val uriString = item.cachedUriString ?: item.originalUriString
 
         item.startedAtMs = System.currentTimeMillis()
+        // "Preparing" alone left the user with no idea whether the app was still just getting
+        // the file ready, actually trying to reach the server, or already talking to it - the
+        // next two status updates below (before/after healthCheck) make each step visible
+        // instead of leaving the UI stuck on one vague label for however long the network
+        // round-trip takes.
         item.status = com.example.data.Localization.getString("status_preparing", settings.uiLanguage)
         updateQueueItem(item)
 
@@ -254,7 +264,15 @@ class TranscriptionOverlayService : Service() {
             var succeeded = false
             try {
                 val serverEngine = ServerTranscriptionEngine()
+                item.status = com.example.data.Localization.getString("status_connecting_server", settings.uiLanguage)
+                updateQueueItem(item)
+                updateOverallProgressNotification()
+
                 if (serverEngine.healthCheck(serverUrl)) {
+                    item.status = com.example.data.Localization.getString("status_connected_server", settings.uiLanguage)
+                    updateQueueItem(item)
+                    updateOverallProgressNotification()
+
                     for (attempt in 1..2) {
                         try {
                             val audioPath = Uri.parse(uriString).path
@@ -262,6 +280,11 @@ class TranscriptionOverlayService : Service() {
                             val audioFile = File(audioPath)
                             item.isServerAttempt = true
                             item.serverFallbackReason = null
+                            // Recorded so a later cancel (cancelQueueItem) knows which model's
+                            // container to restart on the server - the ASR webservice has no
+                            // way to cancel an in-flight transcription otherwise, and closing
+                            // the HTTP connection alone leaves it running at full CPU.
+                            item.serverModelId = settings.serverModel
                             updateQueueItem(item)
 
                             val serverText = serverEngine.transcribe(
@@ -296,6 +319,7 @@ class TranscriptionOverlayService : Service() {
                 }
             } finally {
                 item.serverAttemptJob = null
+                item.serverModelId = null
                 updateQueueItem(item)
                 // Always re-check the queue, not just on failure: this was the other half of
                 // the stuck-notification bug - on a *successful* eager server transcription,
@@ -498,9 +522,24 @@ class TranscriptionOverlayService : Service() {
     private fun cancelQueueItem(itemId: String) {
         val item = transcriptionQueue.find { it.id == itemId } ?: return
         val wasLocallyActive = item.activeJob != null
+        // Captured before cancel(): the job's own finally block clears item.serverModelId
+        // asynchronously once the CancellationException propagates, which could otherwise race
+        // with the fire-and-forget cancel call below and send it a null model.
+        val serverModelId = item.serverModelId
         item.activeJob?.cancel()
         item.serverAttemptJob?.cancel()
         transcriptionQueue.remove(item)
+
+        // Aborting the local job above only stops the app from waiting on the response -
+        // faster-whisper keeps transcribing server-side regardless, tying up a CPU core for a
+        // result nobody wants anymore. Best-effort, fire-and-forget: not tied to the item's own
+        // (now-cancelling) job/scope, and its outcome doesn't change anything the user sees.
+        if (serverModelId != null) {
+            val serverUrl = DependencyProvider.getSettingsManager(this).serverUrl
+            CoroutineScope(Dispatchers.IO).launch {
+                ServerTranscriptionEngine().cancel(serverUrl, serverModelId)
+            }
+        }
 
         if (wasLocallyActive) {
             isProcessingQueue = false

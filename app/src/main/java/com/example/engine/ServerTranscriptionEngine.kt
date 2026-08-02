@@ -11,6 +11,7 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.json.JSONObject
 import java.io.File
@@ -118,6 +119,36 @@ class ServerTranscriptionEngine(private val client: OkHttpClient = OkHttpClient(
                     speedNote = obj.optString("speedNote", "")
                 )
             }
+        }
+    }
+
+    // The ASR webservice has no way to cancel an in-flight transcription - it's a blocking CPU
+    // loop, and closing the HTTP connection to /v1/transcribe does not stop it server-side. This
+    // asks the gateway to restart that model's container instead, which actually frees the CPU.
+    // Deliberately best-effort: called from cancelQueueItem right as the local transcribe() call
+    // is itself being cancelled, so failures here are logged and swallowed rather than surfaced -
+    // there's no user-facing action to take on a failed cancel, the item is already gone from the
+    // queue either way.
+    suspend fun cancel(baseUrl: String, model: String, timeoutMs: Long = 10_000): Unit = withContext(Dispatchers.IO) {
+        try {
+            val body = JSONObject().put("model", model).toString().toRequestBody("application/json".toMediaTypeOrNull())
+            val request = Request.Builder()
+                .url("${normalizeBaseUrl(baseUrl)}/v1/cancel")
+                .post(body)
+                .build()
+            val cancelClient = client.newBuilder()
+                .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                .writeTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                .build()
+            executeAsync(cancelClient, request).use { resp ->
+                if (!resp.isSuccessful) {
+                    Log.w(tag, "Server-side cancel for model \"$model\" returned HTTP ${resp.code}")
+                }
+            }
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            Log.w(tag, "Server-side cancel for model \"$model\" failed: ${e.message}")
         }
     }
 

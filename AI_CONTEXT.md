@@ -54,6 +54,11 @@ AudioScribe is designed with a highly modular, clean **MVVM (Model-View-ViewMode
 * Flow: health check (short timeout) -> if reachable, transcribe (long timeout, retried once on failure) -> on any failure (unreachable, or failed even after retry), falls back to the local engine and reports *why* via `TranscriptionCallback.onServerFallback(reason)` (`"unreachable"` or `"error"`), surfaced as a distinct badge/notification text rather than looking like an ordinary local run.
 * All network calls run under `Dispatchers.IO` internally (not the caller's dispatcher) - `NetworkOnMainThreadException` was a real regression here once, worth being careful about if this file is touched again.
 
+### B3. Fixes spanning both this app and `audioscribe-server`
+* When a fix requires changes on **both** sides of the `POST /v1/transcribe` / `/v1/cancel` / `/v1/models` API (this repo + the companion `audioscribe-server` repo), **implement and ship the app change first**, then the server change.
+* Why: this repo builds via GitHub Actions Release CI (several minutes: Gradle build, APK packaging, release creation) and the user installs the resulting APK - that's the slow, high-latency side. `audioscribe-server` just needs a container rebuild/restart on the homelab host - seconds to a couple of minutes. Sequencing app-first means the slow CI pipeline starts as early as possible instead of waiting behind trivial server work.
+* Concretely: commit + push the app fix (kicking off Release CI) before touching `audioscribe-server`'s compose/Dockerfile/source, even if the server-side change is trivial and could be "gotten out of the way" first.
+
 ### C. SharedPreferences (`data/SettingsManager.kt`)
 Holds user selections dynamically:
 * `language` (Transcription target language: English, German, or System default).
