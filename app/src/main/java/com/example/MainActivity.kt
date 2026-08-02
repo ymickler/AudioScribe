@@ -987,7 +987,13 @@ fun MainScreen() {
                                 while (true) {
                                     val healthy = healthEngine.healthCheck(serverUrlText)
                                     liveConnectionStatus = healthy
-                                    if (healthy && serverModels.isEmpty()) {
+                                    // Re-fetches every cycle rather than only once (removed the old
+                                    // serverModels.isEmpty() gate): the server is the single source of
+                                    // truth for model labels/speed/size, so if it's redeployed with
+                                    // different models or descriptions while this screen stays open,
+                                    // the picker should pick that up on its own instead of showing
+                                    // stale data until the user backs out and reopens Settings.
+                                    if (healthy) {
                                         try {
                                             serverModels = healthEngine.fetchModels(serverUrlText)
                                             hasTestedConnection = true
