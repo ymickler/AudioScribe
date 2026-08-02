@@ -267,11 +267,20 @@ class TranscriptionOverlayService : Service() {
                 item.status = com.example.data.Localization.getString("status_connecting_server", settings.uiLanguage)
                 updateQueueItem(item)
                 updateOverallProgressNotification()
+                // On a healthy local-network server the health check + first progress callback
+                // can both land within a few hundred ms combined - fast enough that these two
+                // status strings replace each other before a human glancing at the screen ever
+                // registers either one, which was the actual complaint (not that the states
+                // don't exist, but that they're invisible in practice). A short minimum-visible
+                // delay is a standard, deliberate UX pattern for exactly this - it's negligible
+                // next to the many-seconds-to-minutes a real transcription takes either way.
+                kotlinx.coroutines.delay(400)
 
                 if (serverEngine.healthCheck(serverUrl)) {
                     item.status = com.example.data.Localization.getString("status_connected_server", settings.uiLanguage)
                     updateQueueItem(item)
                     updateOverallProgressNotification()
+                    kotlinx.coroutines.delay(400)
 
                     for (attempt in 1..2) {
                         try {
