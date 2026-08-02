@@ -131,7 +131,11 @@ class ServerTranscriptionEngine(private val client: OkHttpClient = OkHttpClient(
         model: String,
         audioFile: File,
         language: String,
-        timeoutMs: Long = 120_000,
+        // Kept in sync with the gateway's own DEFAULT_TIMEOUT_MS (audioscribe-server
+        // src/lib/whisperClient.mjs) - if this is shorter than the server's timeout, the app
+        // gives up and falls back to local while the server keeps burning CPU on a transcription
+        // nobody is waiting for anymore.
+        timeoutMs: Long = 240_000,
         onProgress: (Float) -> Unit
     ): String = withContext(Dispatchers.IO) {
         onProgress(0.1f)
