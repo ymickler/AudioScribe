@@ -69,7 +69,11 @@ import com.example.ui.theme.SleekText
 import com.example.ui.theme.SleekButtonText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 
@@ -77,6 +81,7 @@ class TranscriptionOverlayService : Service() {
 
     companion object {
         const val EXTRA_AUDIO_URI = "extra_audio_uri"
+        private const val TAG = "TranscriptionOverlayService"
         private const val NOTIFICATION_ID = 8888
         private const val CHANNEL_ID = "snapscripe_transcription_channel"
         const val ACTION_CANCEL_TRANSCRIPTION = "com.example.action.CANCEL_TRANSCRIPTION"
@@ -86,6 +91,13 @@ class TranscriptionOverlayService : Service() {
     private var windowManager: WindowManager? = null
     private var composeView: ComposeView? = null
 
+    // One lifecycle-bound scope for everything this service launches. Every call site used to
+    // build its own CoroutineScope, which nothing ever cancelled: those coroutines outlived
+    // onDestroy, kept the service context alive (leak) and could still write to the database
+    // afterwards. SupervisorJob so one failing item can't tear down the others; work that must
+    // survive a shutdown (persisting a finished transcription) runs under NonCancellable.
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     // Dedicated Compose lifecycle owner
     private val lifecycleOwner = MyLifecycleOwner()
 
@@ -93,7 +105,7 @@ class TranscriptionOverlayService : Service() {
         val id: String,
         val originalUriString: String,
         var cachedUriString: String? = null,
-        var status: String = "Waiting...",
+        var status: String = "",
         var progress: Float = 0f,
         var text: String = "",
         var isCompleted: Boolean = false,
@@ -177,7 +189,7 @@ class TranscriptionOverlayService : Service() {
             cachedLocalAudioFile = cacheFile
             Uri.fromFile(cacheFile).toString()
         } catch (e: Exception) {
-            e.printStackTrace()
+            android.util.Log.e(TAG, "Could not cache shared audio locally", e)
             null
         }
     }
@@ -228,7 +240,7 @@ class TranscriptionOverlayService : Service() {
         val item = QueueItem(id = itemId, originalUriString = audioUriString)
         transcriptionQueue.add(item)
 
-        CoroutineScope(Dispatchers.IO).launch {
+        serviceScope.launch {
             // Create the history row up front instead of only on completion: opening the app
             // while a transcription is still running (notification mode in particular, where
             // there's no overlay to look at) now shows it as a live card that updates in place
@@ -236,7 +248,7 @@ class TranscriptionOverlayService : Service() {
             createRunningHistoryEntry(item)
 
             val cachedUri = cacheAudioLocally(audioUriString) ?: audioUriString
-            CoroutineScope(Dispatchers.Main).launch {
+            serviceScope.launch(Dispatchers.Main) {
                 item.cachedUriString = cachedUri
                 updateQueueItem(item)
                 // If server transcription is preferred, try it immediately for this item -
@@ -252,6 +264,40 @@ class TranscriptionOverlayService : Service() {
                     checkAndProcessQueue()
                 }
             }
+        }
+    }
+
+    private fun tr(key: String): String =
+        com.example.data.Localization.getString(key, DependencyProvider.getSettingsManager(this).uiLanguage)
+
+    // Single source of truth for what an item's state is called, shared by the overlay row, the
+    // progress notification and the history card - three surfaces that previously each derived
+    // their own label and drifted apart (English literals in one, inline uiLanguage checks in
+    // another).
+    private fun statusLabel(item: QueueItem): String = when {
+        item.isError -> tr("status_failed")
+        item.isCompleted -> {
+            val base = tr("status_completed")
+            if (item.durationLabel.isNotBlank()) "$base (${item.durationLabel})" else base
+        }
+        item.activeJob != null || item.serverAttemptJob != null -> item.status.ifEmpty { tr("status_waiting") }
+        else -> tr("status_waiting_in_queue")
+    }
+
+    // Phase label while a transcription is actually running. Whisper has no real progress signal,
+    // so its percentage is mapped onto descriptive phases instead of a misleading number.
+    private fun progressLabel(item: QueueItem, progress: Float, isWhisper: Boolean): String {
+        val percent = (progress * 100).toInt()
+        return when {
+            item.isServerAttempt -> "${tr("status_transcribing_server")} ($percent%)"
+            isWhisper -> when {
+                progress < 0.15f -> tr("status_whisper_loading")
+                progress < 0.4f -> tr("status_whisper_analyzing")
+                progress < 0.7f -> tr("status_whisper_decoding")
+                progress < 0.9f -> tr("status_whisper_synthesizing")
+                else -> tr("status_whisper_finishing")
+            }
+            else -> "${tr("status_transcribing_local")} ($percent%)"
         }
     }
 
@@ -279,7 +325,7 @@ class TranscriptionOverlayService : Service() {
         } catch (e: Exception) {
             // A failed history row must never block the transcription itself - the overlay and
             // notification keep working, the item just won't show up in the app until it finishes.
-            android.util.Log.w("TranscriptionOverlayService", "Could not create running history entry", e)
+            android.util.Log.w(TAG, "Could not create running history entry", e)
         }
     }
 
@@ -302,7 +348,7 @@ class TranscriptionOverlayService : Service() {
         val textChanged = text != item.lastDbSyncedText
         if (textChanged) item.lastDbSyncedText = text
 
-        CoroutineScope(Dispatchers.IO).launch {
+        serviceScope.launch {
             try {
                 val repository = DependencyProvider.getRepository(this@TranscriptionOverlayService)
                 // Re-checked here, not just before launching: the item can finish while this
@@ -312,19 +358,19 @@ class TranscriptionOverlayService : Service() {
                 repository.updateProgress(entityId, TranscriptionEntity.STATUS_RUNNING, status, progress)
                 if (textChanged) repository.updatePartialText(entityId, text)
             } catch (e: Exception) {
-                android.util.Log.w("TranscriptionOverlayService", "Could not sync running item to history", e)
+                android.util.Log.w(TAG, "Could not sync running item to history", e)
             }
         }
     }
 
     private fun markHistoryEntryFailed(item: QueueItem, error: String) {
         val entityId = item.savedEntityId ?: return
-        CoroutineScope(Dispatchers.IO).launch {
+        serviceScope.launch {
             try {
                 DependencyProvider.getRepository(this@TranscriptionOverlayService)
                     .updateProgress(entityId, TranscriptionEntity.STATUS_ERROR, error, 0f)
             } catch (e: Exception) {
-                android.util.Log.w("TranscriptionOverlayService", "Could not mark history entry failed", e)
+                android.util.Log.w(TAG, "Could not mark history entry failed", e)
             }
         }
     }
@@ -333,11 +379,11 @@ class TranscriptionOverlayService : Service() {
     // no trace in the history rather than a permanently half-finished card.
     private fun deleteHistoryEntry(item: QueueItem) {
         val entityId = item.savedEntityId ?: return
-        CoroutineScope(Dispatchers.IO).launch {
+        serviceScope.launch {
             try {
                 DependencyProvider.getRepository(this@TranscriptionOverlayService).deleteById(entityId)
             } catch (e: Exception) {
-                android.util.Log.w("TranscriptionOverlayService", "Could not delete cancelled history entry", e)
+                android.util.Log.w(TAG, "Could not delete cancelled history entry", e)
             }
         }
     }
@@ -363,7 +409,7 @@ class TranscriptionOverlayService : Service() {
         item.status = com.example.data.Localization.getString("status_preparing", settings.uiLanguage)
         updateQueueItem(item)
 
-        val job = CoroutineScope(Dispatchers.IO).launch {
+        val job = serviceScope.launch {
             var succeeded = false
             try {
                 val serverEngine = ServerTranscriptionEngine()
@@ -406,7 +452,7 @@ class TranscriptionOverlayService : Service() {
                                 language = targetLanguage,
                                 onProgress = { progress ->
                                     item.progress = progress
-                                    item.status = "Transcribing via server... (${(progress * 100).toInt()}%)"
+                                    item.status = progressLabel(item, progress, isWhisper = false)
                                     updateQueueItem(item)
                                     updateOverallProgressNotification()
                                 }
@@ -418,7 +464,7 @@ class TranscriptionOverlayService : Service() {
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             throw e
                         } catch (e: Exception) {
-                            android.util.Log.w("TranscriptionOverlayService", "Eager server attempt $attempt failed for ${item.id}", e)
+                            android.util.Log.w(TAG, "Eager server attempt $attempt failed for ${item.id}", e)
                         }
                     }
                     if (!succeeded) {
@@ -448,16 +494,21 @@ class TranscriptionOverlayService : Service() {
     // Shared by the normal sequential queue's onComplete and the eager server path above, so
     // both finish an item (save to history, show the completed notification) identically.
     private fun finishItemSuccessfully(item: QueueItem, fullText: String, targetLanguage: String, onDone: () -> Unit) {
+        val elapsedMs = System.currentTimeMillis() - item.startedAtMs
         item.text = fullText
         item.progress = 1.0f
-        item.status = "Completed"
-        item.durationLabel = formatDuration(System.currentTimeMillis() - item.startedAtMs)
+        item.status = tr("status_completed")
+        item.durationLabel = formatDuration(elapsedMs)
         item.isCompleted = true
         item.activeJob = null
         updateQueueItem(item)
 
-        CoroutineScope(Dispatchers.IO).launch {
+        serviceScope.launch {
             try {
+                // NonCancellable: this is the one write that must not be lost if the service is
+                // being torn down at the same moment - the transcription is finished, dropping it
+                // here would throw away the actual result.
+                withContext(NonCancellable) {
                 val repository = DependencyProvider.getRepository(this@TranscriptionOverlayService)
                 val entity = TranscriptionEntity(
                     id = item.savedEntityId ?: 0,
@@ -465,6 +516,7 @@ class TranscriptionOverlayService : Service() {
                     transcribedText = fullText,
                     language = targetLanguage,
                     timestamp = item.savedTimestamp ?: System.currentTimeMillis(),
+                    duration = elapsedMs,
                     // Replaces the "running" row created at enqueue time (same id), so the live
                     // card turns into a regular completed entry instead of a second card.
                     status = TranscriptionEntity.STATUS_COMPLETED,
@@ -476,7 +528,7 @@ class TranscriptionOverlayService : Service() {
                 item.savedTimestamp = entity.timestamp
                 updateQueueItem(item)
 
-                CoroutineScope(Dispatchers.Main).launch {
+                serviceScope.launch(Dispatchers.Main) {
                     showCompletedNotification(
                         this@TranscriptionOverlayService,
                         id.toInt(),
@@ -488,9 +540,10 @@ class TranscriptionOverlayService : Service() {
                     )
                     onDone()
                 }
+                }
             } catch (e: Exception) {
-                e.printStackTrace()
-                CoroutineScope(Dispatchers.Main).launch { onDone() }
+                android.util.Log.e(TAG, "Could not save completed transcription", e)
+                serviceScope.launch(Dispatchers.Main) { onDone() }
             }
         }
     }
@@ -504,7 +557,7 @@ class TranscriptionOverlayService : Service() {
         // nothing in the queue actually has an active job, the flag is lying - fix it instead
         // of trusting it.
         if (isProcessingQueue && transcriptionQueue.none { it.activeJob != null }) {
-            android.util.Log.w("TranscriptionOverlayService", "isProcessingQueue was true with no active job - resetting")
+            android.util.Log.w(TAG, "isProcessingQueue was true with no active job - resetting")
             isProcessingQueue = false
         }
         if (isProcessingQueue) return
@@ -577,19 +630,7 @@ class TranscriptionOverlayService : Service() {
             override fun onProgress(progress: Float) {
                 if (sessionId != currentSessionId) return
                 val isWhisper = (item.currentModelType?.engine ?: settings.sttEngine) == "whisper"
-                item.status = when {
-                    item.isServerAttempt -> "Transcribing via server... (${(progress * 100).toInt()}%)"
-                    isWhisper -> {
-                        when {
-                            progress < 0.15f -> "Loading Whisper model..."
-                            progress < 0.4f -> "Analyzing audio waves..."
-                            progress < 0.7f -> "Decoding speech patterns..."
-                            progress < 0.9f -> "Synthesizing text..."
-                            else -> "Finishing up..."
-                        }
-                    }
-                    else -> "Transcribing... (${(progress * 100).toInt()}%)"
-                }
+                item.status = progressLabel(item, progress, isWhisper)
                 item.progress = progress
                 updateQueueItem(item)
                 updateOverallProgressNotification()
@@ -614,7 +655,7 @@ class TranscriptionOverlayService : Service() {
                 if (sessionId != currentSessionId) return
                 item.isError = true
                 item.errorMsg = error
-                item.status = "Error occurred"
+                item.status = tr("status_error_occurred")
                 item.activeJob = null
                 updateQueueItem(item)
                 markHistoryEntryFailed(item, error)
@@ -664,8 +705,13 @@ class TranscriptionOverlayService : Service() {
         // (now-cancelling) job/scope, and its outcome doesn't change anything the user sees.
         if (serverModelId != null) {
             val serverUrl = DependencyProvider.getSettingsManager(this).serverUrl
-            CoroutineScope(Dispatchers.IO).launch {
-                ServerTranscriptionEngine().cancel(serverUrl, serverModelId)
+            serviceScope.launch {
+                // NonCancellable because cancelling the last item stops the service right after
+                // this - without it the tear-down would kill the very request that frees the
+                // server's CPU again.
+                withContext(NonCancellable) {
+                    ServerTranscriptionEngine().cancel(serverUrl, serverModelId)
+                }
             }
         }
 
@@ -695,7 +741,7 @@ class TranscriptionOverlayService : Service() {
                 try {
                     windowManager?.removeView(composeView)
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    android.util.Log.w(TAG, "Could not remove overlay view", e)
                 }
                 composeView = null
             }
@@ -753,17 +799,7 @@ class TranscriptionOverlayService : Service() {
         }
     }
 
-    private fun formatDuration(ms: Long): String {
-        val clamped = ms.coerceAtLeast(0L)
-        val totalSeconds = clamped / 1000.0
-        return if (totalSeconds < 60) {
-            String.format(java.util.Locale.US, "%.1fs", totalSeconds)
-        } else {
-            val minutes = clamped / 60000
-            val seconds = (clamped % 60000) / 1000
-            String.format(java.util.Locale.US, "%d:%02d", minutes, seconds)
-        }
-    }
+    private fun formatDuration(ms: Long): String = com.example.data.DurationFormat.format(ms)
 
     private fun updateOverallProgressNotification() {
         val settings = DependencyProvider.getSettingsManager(this)
@@ -784,11 +820,12 @@ class TranscriptionOverlayService : Service() {
         val totalCount = transcriptionQueue.size
         val currentNum = activeIndex + 1
 
-        val statusText = if (settings.uiLanguage == "de") {
-            "Verarbeite $currentNum von $totalCount (${(activeItem.progress * 100).toInt()}%)"
-        } else {
-            "Processing $currentNum of $totalCount (${(activeItem.progress * 100).toInt()}%)"
-        }
+        // Counter plus the item's own phase label (the same one the overlay and the history card
+        // show), so the notification says *what* is happening, not just a bare percentage.
+        val counter = com.example.data.Localization.getString(
+            "notification_processing_counter", settings.uiLanguage, currentNum, totalCount
+        )
+        val statusText = "$counter · ${statusLabel(activeItem)}"
 
         updateForegroundNotification(statusText, activeItem.progress, activeItem.text)
     }
@@ -964,15 +1001,7 @@ class TranscriptionOverlayService : Service() {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    val statusText = when {
-                        item.isCompleted -> {
-                            val base = if (settings.uiLanguage == "de") "Abgeschlossen" else "Completed"
-                            if (item.durationLabel.isNotBlank()) "$base (${item.durationLabel})" else base
-                        }
-                        item.isError -> if (settings.uiLanguage == "de") "Fehler" else "Failed"
-                        item.activeJob != null || item.serverAttemptJob != null -> item.status
-                        else -> if (settings.uiLanguage == "de") "In Warteschlange..." else "Waiting in queue..."
-                    }
+                    val statusText = statusLabel(item)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = statusText,
@@ -1029,7 +1058,7 @@ class TranscriptionOverlayService : Service() {
                 ) {
                     Icon(
                         imageVector = Icons.Default.Close,
-                        contentDescription = "Cancel item",
+                        contentDescription = tr("btn_cancel_item"),
                         tint = SleekText.copy(alpha = 0.5f),
                         modifier = Modifier.size(14.dp)
                     )
@@ -1053,18 +1082,14 @@ class TranscriptionOverlayService : Service() {
 
             if (item.isError) {
                 Text(
-                    text = "Error: ${item.errorMsg}",
+                    text = "${tr("label_error_prefix")}: ${item.errorMsg}",
                     color = MaterialTheme.colorScheme.error,
                     fontSize = 13.sp,
                     modifier = Modifier.fillMaxWidth()
                 )
             } else {
                 val displayText = item.text.ifEmpty {
-                    if (item.activeJob != null) {
-                        if (settings.uiLanguage == "de") "Analysiere Sprachsegment..." else "Analyzing voice segment..."
-                    } else {
-                        if (settings.uiLanguage == "de") "Wartet auf Verarbeitung..." else "Waiting for processing..."
-                    }
+                    if (item.activeJob != null) tr("status_analyzing_segment") else tr("status_waiting_for_processing")
                 }
                 Text(
                     text = displayText,
@@ -1110,7 +1135,7 @@ class TranscriptionOverlayService : Service() {
                             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                             val clip = ClipData.newPlainText("Transcription", item.text)
                             clipboard.setPrimaryClip(clip)
-                            Toast.makeText(context, "Copied to clipboard!", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, tr("toast_copied"), Toast.LENGTH_SHORT).show()
                         },
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.buttonColors(
@@ -1122,11 +1147,11 @@ class TranscriptionOverlayService : Service() {
                     ) {
                         Icon(
                             imageVector = Icons.Default.ContentCopy,
-                            contentDescription = "Copy",
+                            contentDescription = tr("btn_copy"),
                             modifier = Modifier.size(12.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Copy", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text(tr("btn_copy"), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
 
                     Button(
@@ -1151,12 +1176,12 @@ class TranscriptionOverlayService : Service() {
                     ) {
                         Icon(
                             imageVector = Icons.Default.Share,
-                            contentDescription = "Share",
+                            contentDescription = tr("btn_share"),
                             tint = SleekText,
                             modifier = Modifier.size(12.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Share", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text(tr("btn_share"), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -1168,7 +1193,7 @@ class TranscriptionOverlayService : Service() {
             try {
                 windowManager?.removeView(composeView)
             } catch (e: Exception) {
-                e.printStackTrace()
+                android.util.Log.w(TAG, "Could not remove overlay view", e)
             }
             composeView = null
         }
@@ -1220,7 +1245,7 @@ class TranscriptionOverlayService : Service() {
         val settings = DependencyProvider.getSettingsManager(this)
         if (!settings.showAsNotification) return
         
-        CoroutineScope(Dispatchers.Main).launch {
+        serviceScope.launch(Dispatchers.Main) {
             val title = com.example.data.Localization.getString("notification_title_started", settings.uiLanguage)
             
             val cancelIntent = Intent(this@TranscriptionOverlayService, TranscriptionOverlayService::class.java).apply {
@@ -1275,7 +1300,7 @@ class TranscriptionOverlayService : Service() {
             try {
                 startForeground(NOTIFICATION_ID, builder.build())
             } catch (e: Exception) {
-                e.printStackTrace()
+                android.util.Log.w(TAG, "Could not update the foreground notification", e)
             }
         }
     }
@@ -1380,7 +1405,7 @@ class TranscriptionOverlayService : Service() {
             try {
                 windowManager?.removeView(composeView)
             } catch (e: Exception) {
-                e.printStackTrace()
+                android.util.Log.w(TAG, "Could not remove overlay view", e)
             }
             composeView = null
         }
@@ -1390,6 +1415,9 @@ class TranscriptionOverlayService : Service() {
         }
         transcriptionQueue.clear()
         cachedLocalAudioFile?.delete()
+        // Everything this service launched dies with it - except the NonCancellable blocks that
+        // finish persisting a completed transcription.
+        serviceScope.cancel()
         lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
         lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
         lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)

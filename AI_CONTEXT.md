@@ -47,7 +47,14 @@ AudioScribe is designed with a highly modular, clean **MVVM (Model-View-ViewMode
 * `TranscriptionEntity.status` is one of `running` / `completed` / `error`, plus `statusText` (the same human-readable label the overlay shows) and `progress`.
 * `updateQueueItem` is the single funnel: every status/progress change mirrors into the row via `syncItemToDatabase`, throttled to max one write per second unless the status label itself changed.
 * Completion re-inserts the row with the same id (`OnConflictStrategy.REPLACE`), so the running card turns into a normal entry instead of producing a second card. Cancel deletes the row (`QueueItem.cancelled` also covers a cancel that lands before the insert has finished); a killed service is cleaned up by `failStaleRunning` (30 min) on app start.
-* DB schema is **version 2** with a real `MIGRATION_1_2` - the destructive fallback must not be relied on here, v1 users have real history in that table.
+* DB schema is **version 3** (`MIGRATION_1_2` status columns, `MIGRATION_2_3` timestamp index). There is deliberately **no** `fallbackToDestructiveMigration()` - a forgotten migration must crash in development rather than silently wipe the user's history. Every schema change needs a real `Migration`.
+
+### A3. Cross-cutting conventions (see `OPTIMIZATIONS.md` for the full write-up)
+* **All user-visible strings go through `Localization`** - including the ones set inside the service. `Localization.getString(key, lang, vararg args)` fills `{1}`/`{2}` placeholders so counters stay inside the translated sentence.
+* **One status derivation**: `statusLabel(item)` and `progressLabel(...)` in the service feed overlay, notification and history card alike. Don't add a fourth private formatting branch.
+* **One coroutine scope**: everything the service launches uses `serviceScope`, cancelled in `onDestroy()`. Only writes that must survive shutdown (persisting a finished transcription, telling the server to cancel) are wrapped in `withContext(NonCancellable)`.
+* `CryptoHelper.decrypt` memoizes into a bounded LRU - the history Flow re-decrypts the whole list on every emission.
+* `ServerTranscriptionEngine` defaults to a process-wide `sharedClient`; per-call timeouts come from `newBuilder()`, which keeps sharing the pool.
 
 ### B. Speech-to-Text Engine
 * **LocalTranscriptionEngine (`engine/LocalTranscriptionEngine.kt`):**

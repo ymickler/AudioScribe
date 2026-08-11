@@ -12,8 +12,9 @@ interface TranscriptionDao {
     @Query("SELECT * FROM transcriptions ORDER BY timestamp DESC")
     fun getAllTranscriptions(): Flow<List<TranscriptionEntity>>
 
-    @Query("SELECT * FROM transcriptions WHERE transcribedText LIKE :query ORDER BY timestamp DESC")
-    fun searchTranscriptions(query: String): Flow<List<TranscriptionEntity>>
+    // No SQL-level search query on purpose: with encryption enabled the stored text is ciphertext,
+    // so a LIKE filter would silently return nothing. Searching happens in the repository on the
+    // decrypted list instead.
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTranscription(transcription: TranscriptionEntity): Long

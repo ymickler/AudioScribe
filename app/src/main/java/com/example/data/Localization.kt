@@ -107,6 +107,23 @@ object Localization {
             "card_running_title" to "Transcription running...",
             "card_running_waiting_text" to "The text appears here as soon as it is ready.",
             "card_failed_title" to "Transcription failed",
+            "status_waiting" to "Waiting...",
+            "status_waiting_in_queue" to "Waiting in queue...",
+            "status_waiting_for_processing" to "Waiting for processing...",
+            "status_analyzing_segment" to "Analyzing voice segment...",
+            "status_transcribing_server" to "Transcribing via server...",
+            "status_transcribing_local" to "Transcribing...",
+            "status_whisper_loading" to "Loading Whisper model...",
+            "status_whisper_analyzing" to "Analyzing audio waves...",
+            "status_whisper_decoding" to "Decoding speech patterns...",
+            "status_whisper_synthesizing" to "Synthesizing text...",
+            "status_whisper_finishing" to "Finishing up...",
+            "status_completed" to "Completed",
+            "status_failed" to "Failed",
+            "status_error_occurred" to "Error occurred",
+            "label_error_prefix" to "Error",
+            "btn_cancel_item" to "Cancel item",
+            "notification_processing_counter" to "Processing {1} of {2}",
         ),
         "de" to mapOf(
             "app_name" to "AudioScribe",
@@ -207,8 +224,38 @@ object Localization {
             "card_running_title" to "Transkription läuft...",
             "card_running_waiting_text" to "Der Text erscheint hier, sobald er fertig ist.",
             "card_failed_title" to "Transkription fehlgeschlagen",
+            "status_waiting" to "Wartet...",
+            "status_waiting_in_queue" to "In Warteschlange...",
+            "status_waiting_for_processing" to "Wartet auf Verarbeitung...",
+            "status_analyzing_segment" to "Analysiere Sprachsegment...",
+            "status_transcribing_server" to "Transkribiere über Server...",
+            "status_transcribing_local" to "Transkribiere...",
+            "status_whisper_loading" to "Lade Whisper-Modell...",
+            "status_whisper_analyzing" to "Analysiere Audiowellen...",
+            "status_whisper_decoding" to "Dekodiere Sprachmuster...",
+            "status_whisper_synthesizing" to "Setze Text zusammen...",
+            "status_whisper_finishing" to "Schließe ab...",
+            "status_completed" to "Abgeschlossen",
+            "status_failed" to "Fehler",
+            "status_error_occurred" to "Fehler aufgetreten",
+            "label_error_prefix" to "Fehler",
+            "btn_cancel_item" to "Element abbrechen",
+            "notification_processing_counter" to "Verarbeite {1} von {2}",
         )
     )
+
+    /**
+     * Same lookup as [getString], with `{1}`, `{2}`, ... placeholders in the translation replaced
+     * by [args] in order - so counters and numbers stay inside the translated sentence instead of
+     * forcing callers into inline `if (lang == "de")` branches around string concatenation.
+     */
+    fun getString(key: String, lang: String, vararg args: Any): String {
+        var result = getString(key, lang)
+        args.forEachIndexed { index, arg ->
+            result = result.replace("{${index + 1}}", arg.toString())
+        }
+        return result
+    }
 
     fun getString(key: String, lang: String): String {
         val targetLang = if (lang == "system") {

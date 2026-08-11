@@ -1,99 +1,98 @@
-# AudioScribe – Optimierungspotenzial
+# AudioScribe – Optimierungen
 
-Bestandsaufnahme vom 11.08.2026, nach Einführung der Live-Karten für laufende Transkriptionen.
-**Nichts davon ist umgesetzt** – die Liste ist reine Dokumentation, sortiert nach Aufwand/Nutzen
-(oben: low-hanging fruits).
+Bestandsaufnahme vom 11.08.2026 (nach Einführung der Live-Karten für laufende Transkriptionen),
+Umsetzung am selben Tag. Status je Punkt unten.
 
----
-
-## 🍏 Low-hanging fruits (je < 1 h, geringes Risiko)
-
-### 1. Hartkodierte englische Status-Texte lokalisieren
-`TranscriptionOverlayService` setzt `item.status` an vielen Stellen als festen englischen String
-(`"Waiting..."` Z. 96, `"Transcribing via server... (x%)"` Z. 409/581, `"Loading Whisper model..."`
-Z. 584-588, `"Completed"` Z. 453, `"Error occurred"` Z. 617), während direkt daneben
-`Localization.getString(...)` genutzt wird. Zwei Stellen (Z. 969, 1064) lösen das per
-`if (uiLanguage == "de")` inline – dritte Variante desselben Problems.
-Neu relevant: dieser Text landet jetzt als `statusText` auf der Verlaufskarte, ist also für
-deutschsprachige Nutzer dauerhaft sichtbar. Fix: Keys in `Localization.kt` ergänzen und die
-Literale ersetzen.
-
-### 2. Toter DAO-Code / doppelte Suche
-`TranscriptionDao.searchTranscriptions()` wird nirgends aufgerufen – `TranscriptionRepository.search()`
-filtert stattdessen im Speicher über die bereits entschlüsselte Liste. Das ist bei aktiver
-Verschlüsselung sogar korrekt (SQL kann Chiffrat nicht durchsuchen), aber die ungenutzte Query
-sollte weg, sonst nutzt sie irgendwann jemand und die Suche findet stumm nichts mehr.
-
-### 3. Ungenutztes Feld `TranscriptionEntity.duration`
-Wird nie geschrieben und nie gelesen (die tatsächliche Dauer lebt als `durationLabel` nur im
-Service). Entweder beim Abschluss mitschreiben und auf der Karte anzeigen, oder in der nächsten
-Migration entfernen.
-
-### 4. `printStackTrace()` durch `android.util.Log` ersetzen
-10 Stellen (`CryptoHelper` 3, `TranscriptionOverlayService` 6, `WhisperEngineImpl` 1). In
-Release-Builds landet das im Nichts bzw. ohne Tag – Fehler bei Ver-/Entschlüsselung wären
-dadurch praktisch nicht diagnostizierbar. Der Service nutzt an anderer Stelle bereits `Log.w`.
-
-### 5. Room-Index auf `timestamp`
-Jede Abfrage ist `ORDER BY timestamp DESC`, es gibt keinen Index. Bei wachsendem Verlauf sortiert
-SQLite jedes Mal komplett. Ein `@Entity(indices = [Index("timestamp")])` kostet eine Zeile plus
-Migration.
-
-### 6. `fallbackToDestructiveMigration()` entfernen
-Seit v2 existiert eine echte Migration. Der Fallback steht weiter daneben und würde bei der
-nächsten vergessenen Migration den kompletten Verlauf des Nutzers wortlos löschen – genau das,
-wogegen die Migration geschrieben wurde.
+**Zusammenfassung: 12 von 13 Punkten umgesetzt.** Punkt 13 (Queue-Repository) ist bewusst offen –
+Begründung dort.
 
 ---
 
-## 🍋 Mittlerer Aufwand (1–4 h)
+## 🍏 Low-hanging fruits
 
-### 7. Freilaufende Coroutine-Scopes im Service bündeln
-`TranscriptionOverlayService` erzeugt an 11 Stellen `CoroutineScope(Dispatchers.IO/Main).launch {}`.
-Diese Scopes hängen an keinem Lifecycle: bei `stopSelf()`/`onDestroy()` laufen sie weiter, halten
-den Service-Context (Memory-Leak) und schreiben ggf. noch in die DB. Ein einziger
-`serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)`, in `onDestroy()` gecancelt,
-ersetzt alle – die laufenden Transkriptions-Jobs bleiben davon unberührt, weil die separat
-verwaltet werden.
+### 1. Hartkodierte englische Status-Texte lokalisieren — ✅ erledigt
+`TranscriptionOverlayService` setzte `item.status` an vielen Stellen als festen englischen String
+und löste an anderen dasselbe per `if (uiLanguage == "de")` inline. Durch die neue Verlaufskarte
+war dieser Text dauerhaft sichtbar. Jetzt: alle Texte über `Localization`, dazu
+`Localization.getString(key, lang, vararg args)` mit `{1}`/`{2}`-Platzhaltern, damit Zähler
+innerhalb des übersetzten Satzes bleiben. Auch die Overlay-Buttons (Copy/Share/Cancel) und der
+Zwischenablage-Toast waren noch englisch – ebenfalls erledigt.
 
-### 8. Entschlüsselung cachen
-`TranscriptionRepository.allTranscriptions` entschlüsselt bei **jeder** Emission die komplette
-Liste neu – also auch bei jedem Fortschritts-Tick einer laufenden Transkription (1×/Sekunde). Bei
-200 Einträgen sind das 200 AES-Operationen pro Sekunde auf dem Main-geteilten Flow. Ein kleiner
-LRU-Cache `id+hash -> Klartext` oder Entschlüsselung erst beim Rendern der sichtbaren Karte
-räumt das ab.
+### 2. Toter DAO-Code / doppelte Suche — ✅ erledigt
+`searchTranscriptions()` entfernt; an seiner Stelle steht ein Kommentar, warum es **keine**
+SQL-Suche gibt (bei aktiver Verschlüsselung stünde dort Chiffrat, ein `LIKE` würde stumm nichts
+finden). Gesucht wird weiterhin im Repository auf der entschlüsselten Liste.
 
-### 9. `MainActivity.kt` aufteilen (1807 Zeilen)
-History-Screen, Settings-Screen, `HistoryItemCard`, ViewModel und Activity stecken in einer Datei.
-Reine Datei-Splits ohne Logikänderung: `ui/HistoryScreen.kt`, `ui/SettingsScreen.kt`,
-`ui/HistoryItemCard.kt`, `MainViewModel.kt`.
+### 3. Ungenutztes Feld `duration` — ✅ erledigt
+Wird bei Abschluss mit der tatsächlichen Transkriptionsdauer geschrieben und auf der Verlaufskarte
+neben dem Datum angezeigt. Die Formatierung liegt jetzt in `data/DurationFormat.kt` und wird von
+Overlay, Benachrichtigung und Karte gemeinsam genutzt.
 
-### 10. OkHttp-Client wiederverwenden
-`ServerTranscriptionEngine` legt per Default für jede Instanz einen neuen `OkHttpClient` an, und
-der Service erzeugt pro Versuch eine neue Engine. Jeder Client bringt eigenen Connection-Pool und
-Thread-Pool mit – ein `companion object`-Singleton (Timeouts weiterhin pro Aufruf über
-`newBuilder()`) spart Sockets und Aufwärmzeit bei jeder Server-Transkription.
+### 4. `printStackTrace()` → `android.util.Log` — ✅ erledigt
+Alle 10 Stellen ersetzt, jeweils mit aussagekräftiger Meldung und Tag (`Log.e` für echte Fehler,
+`Log.w` für tolerierbare). Krypto-Fehler sind damit im Release-Build überhaupt erst auffindbar.
+
+### 5. Room-Index auf `timestamp` — ✅ erledigt
+`@Entity(indices = [Index("timestamp")])` plus `MIGRATION_2_3` (Schema v3).
+
+### 6. `fallbackToDestructiveMigration()` entfernen — ✅ erledigt
+Entfernt. Eine vergessene Migration crasht jetzt in der Entwicklung, statt still den kompletten
+Verlauf des Nutzers zu löschen.
 
 ---
 
-## 🍈 Größer (> 4 h, eher Refactoring-Projekte)
+## 🍋 Mittlerer Aufwand
 
-### 11. Testsuite entpollen
-Die Robolectric-Tests warten in `while (System.currentTimeMillis() - start < 6000)`-Schleifen mit
-`delay(100)` auf DB-Zustände. Das ist wallclock-abhängig (auf langsamen CI-Runnern flaky) und
-kostet pro Test bis zu 6 s. Mit `runTest` + virtueller Zeit bzw. `Turbine` auf dem Flow wäre das
-deterministisch und praktisch instantan.
+### 7. Freilaufende Coroutine-Scopes bündeln — ✅ erledigt
+Die 11 einzelnen `CoroutineScope(Dispatchers.IO/Main)` sind durch einen `serviceScope`
+(`SupervisorJob + Dispatchers.IO`) ersetzt, der in `onDestroy()` gecancelt wird. Zwei Blöcke
+laufen bewusst unter `NonCancellable`: das Persistieren einer **fertigen** Transkription (sonst
+ginge das Ergebnis beim gleichzeitigen Herunterfahren verloren) und der Cancel-Aufruf an den
+Server (der beendet dort die CPU-Last).
 
-### 12. Doppelte Status-Darstellung Overlay ↔ Benachrichtigung ↔ Verlaufskarte
-Es gibt inzwischen drei Oberflächen, die denselben Zustand aus derselben `QueueItem` ableiten,
-jede mit eigener Formatierungslogik im Service (Overlay-Composable, `updateOverallProgressNotification`,
-`syncItemToDatabase`). Eine gemeinsame `TranscriptionStatus`-Ableitung (ein Objekt → Label,
-Fortschritt, Badge) würde ~150 Zeilen Duplikat im Service ersetzen und Divergenzen wie in Punkt 1
-strukturell verhindern.
+### 8. Entschlüsselung cachen — ✅ erledigt
+`CryptoHelper.decrypt` memoisiert über eine LRU (200 Einträge, `LinkedHashMap` mit
+Zugriffs-Reihenfolge). Chiffrat ist unveränderlich, der Cache-Key ist der gespeicherte Wert.
+Damit entfällt das erneute Entschlüsseln der gesamten Liste bei jedem Fortschritts-Tick.
 
-### 13. Zustand aus dem Service in ein Repository ziehen
-Aktuell ist `TranscriptionOverlayService` gleichzeitig Foreground-Service, Queue-Manager,
-Compose-Host und Persistenz-Schreiber (1300+ Zeilen). Ein `TranscriptionQueueRepository` als
-Single Source of Truth (Flow von Queue-Items), auf den Service **und** App gleichermaßen
-zugreifen, würde u. a. das jetzt über die Datenbank gelöste Live-Update überflüssig machen und
-Abbrechen aus der App heraus ermöglichen.
+### 9. `MainActivity.kt` aufteilen — ✅ erledigt
+1807 Zeilen → `MainActivity.kt` (94), `MainViewModel.kt` (127), `MainScreen.kt` (1540),
+`HistoryItemCard.kt` (~300). Reiner Datei-Split ohne Logikänderung.
+
+### 10. OkHttp-Client wiederverwenden — ✅ erledigt
+Der Default-Parameter zeigt jetzt auf einen prozessweiten `sharedClient`. Die per-Aufruf
+unterschiedlichen Timeouts entstehen weiterhin über `newBuilder()` – der geteilte Connection- und
+Thread-Pool bleibt dabei erhalten, genau so ist OkHttp gedacht. Der Test-Injektionspunkt bleibt.
+
+---
+
+## 🍈 Größer
+
+### 11. Testsuite entpollen — ✅ erledigt (soweit sinnvoll möglich)
+Die vier handgeschriebenen 6-Sekunden-Polling-Schleifen sind durch einen gemeinsamen
+`awaitHistory(description) { … }`-Helfer ersetzt: kehrt sofort zurück, sobald die Bedingung gilt,
+und schlägt mit einer lesbaren Meldung statt `expected:<1> but was:<2>` fehl.
+**Bewusst nicht** auf virtuelle Zeit umgestellt: der Service läuft auf echtem `Dispatchers.IO` und
+die Engines starten eigene Threads – vollständig deterministisch würde das erst mit injizierbaren
+Dispatchern durch Service *und* Engines, was deutlich invasiver wäre als der Nutzen rechtfertigt.
+
+### 12. Doppelte Status-Darstellung Overlay ↔ Benachrichtigung ↔ Karte — ✅ erledigt
+Zwei gemeinsame Ableitungen im Service (`statusLabel(item)` für den Zustand, `progressLabel(...)`
+für die laufende Phase) versorgen jetzt alle drei Oberflächen. Die Benachrichtigung zeigt dadurch
+zusätzlich *was* gerade passiert statt nur „x von y (42%)".
+
+### 13. Zustand aus dem Service in ein Repository ziehen — ❌ bewusst offen
+Der Vorschlag war ein `TranscriptionQueueRepository` als Single Source of Truth, auf das Service
+und App gleichermaßen zugreifen.
+
+**Nicht umgesetzt, weil:** der Nutzen wäre aktuell null und das Risiko hoch. Das eigentliche
+Anwenderproblem („laufende Transkription in der App sehen") ist seit v1.23.0 über die Datenbank
+gelöst und funktioniert. Ein Queue-Repository würde diesen Weg ersetzen – also die gerade
+ausgelieferten `status`/`statusText`/`progress`-Spalten samt Migration wieder zurückbauen – und
+dabei Queue-Verwaltung, Overlay-Binding und Benachrichtigungslogik eines 1300-Zeilen-Service
+gleichzeitig anfassen. Das ist ein eigenes Vorhaben mit eigenem Testlauf, kein Aufräumpunkt, den
+man im selben Durchgang mitnimmt.
+
+**Wann es sich lohnt:** sobald die App tatsächlich in die laufende Verarbeitung eingreifen soll –
+allen voran „Transkription aus der App heraus abbrechen", was heute nur aus Overlay/
+Benachrichtigung geht. Dann ist der Umbau begründet und sollte als eigener Schritt erfolgen.

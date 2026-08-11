@@ -1,15 +1,20 @@
 package com.example.data
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
-@Entity(tableName = "transcriptions")
+// Indexed on timestamp: every query in TranscriptionDao orders by it, so without the index SQLite
+// re-sorts the whole table on each emission - and with a running transcription that's once a
+// second.
+@Entity(tableName = "transcriptions", indices = [Index("timestamp")])
 data class TranscriptionEntity(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val audioUri: String,
     val transcribedText: String,
     val timestamp: Long = System.currentTimeMillis(),
     val language: String,
+    // How long the transcription itself took, in ms - written on completion and shown on the card.
     val duration: Long = 0L,
     // A history row is created the moment a transcription starts (not only once it finishes), so
     // opening the app mid-run shows the running item as a live card that updates in place.

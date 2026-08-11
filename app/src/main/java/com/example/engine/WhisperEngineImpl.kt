@@ -65,7 +65,7 @@ class WhisperEngineImpl : STTEngine {
             if (e is kotlinx.coroutines.CancellationException) {
                 throw e
             }
-            e.printStackTrace()
+            android.util.Log.e("WhisperEngineImpl", "Whisper transcription failed", e)
             throw Exception("Whisper transcription failed: ${e.message}")
         } finally {
             progressJob.cancel()

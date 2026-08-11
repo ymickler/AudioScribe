@@ -39,7 +39,16 @@ import kotlin.coroutines.resumeWithException
 // files need a much longer timeout. The parameter exists (rather than a hardcoded private val)
 // purely so unit tests can inject a client with a fake/interceptor-based Call.Factory instead of
 // hitting the network.
-class ServerTranscriptionEngine(private val client: OkHttpClient = OkHttpClient()) {
+class ServerTranscriptionEngine(private val client: OkHttpClient = sharedClient) {
+
+    companion object {
+        // One process-wide client instead of a fresh one per engine instance (and the service
+        // creates an engine per attempt): every OkHttpClient brings its own connection pool and
+        // thread pool, so the old default threw away keep-alive connections and re-paid the
+        // TCP/TLS handshake on every single call. Per-call timeouts still differ - newBuilder()
+        // below returns a client that *shares* this pool, which is exactly the intended usage.
+        private val sharedClient: OkHttpClient by lazy { OkHttpClient() }
+    }
 
     // sizeMb/ramMb/speedNote are optional metadata a compatible server may provide (our own
     // audioscribe-server does); default to 0/"" so a third-party server that only returns

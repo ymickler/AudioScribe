@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [TranscriptionEntity::class], version = 2, exportSchema = false)
+@Database(entities = [TranscriptionEntity::class], version = 3, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
 
     abstract fun transcriptionDao(): TranscriptionDao
@@ -26,6 +26,17 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // Index name must match exactly what Room generates for @Index("timestamp"), otherwise the
+        // schema validation on open fails.
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_transcriptions_timestamp ON transcriptions (timestamp)")
+            }
+        }
+
+        // Exposed so the migration test can build the same upgrade path against a real v1 file.
+        fun migrations(): Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -33,8 +44,11 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "transcriber_database"
                 )
-                .addMigrations(MIGRATION_1_2)
-                .fallbackToDestructiveMigration()
+                // Deliberately no fallbackToDestructiveMigration(): with real migrations in place,
+                // the fallback would silently wipe the user's entire history the first time a
+                // migration is forgotten - exactly the failure these migrations exist to prevent.
+                // A missing migration should crash loudly in development instead.
+                .addMigrations(*migrations())
                 .build()
                 INSTANCE = instance
                 instance
