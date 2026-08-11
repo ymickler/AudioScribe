@@ -104,6 +104,9 @@ object Localization {
             "status_server_disconnected" to "Not reachable",
             "status_server_checking" to "Checking...",
             "btn_move_to_background" to "Move to background (show as notification)",
+            "card_running_title" to "Transcription running...",
+            "card_running_waiting_text" to "The text appears here as soon as it is ready.",
+            "card_failed_title" to "Transcription failed",
         ),
         "de" to mapOf(
             "app_name" to "AudioScribe",
@@ -201,6 +204,9 @@ object Localization {
             "status_server_disconnected" to "Nicht erreichbar",
             "status_server_checking" to "Prüfe...",
             "btn_move_to_background" to "In den Hintergrund verschieben (als Benachrichtigung anzeigen)",
+            "card_running_title" to "Transkription läuft...",
+            "card_running_waiting_text" to "Der Text erscheint hier, sobald er fertig ist.",
+            "card_failed_title" to "Transkription fehlgeschlagen",
         )
     )
 

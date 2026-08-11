@@ -229,16 +229,57 @@ class ExampleRobolectricTest {
         }
         service.onStartCommand(serviceIntent3, 0, 3)
 
+        // Filtered to completed rows: every queued item also gets a "running" placeholder row
+        // right away (so the app can show it as a live card), which would otherwise satisfy this
+        // wait before anything was actually transcribed.
         var allItems: List<TranscriptionEntity> = emptyList()
         val startTime = System.currentTimeMillis()
         while (System.currentTimeMillis() - startTime < 6000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            allItems = repository.allTranscriptions.first()
+            allItems = repository.allTranscriptions.first().filter { it.status == TranscriptionEntity.STATUS_COMPLETED }
             if (allItems.size == 3) break
             kotlinx.coroutines.delay(100)
         }
 
         assertEquals(3, allItems.size)
+        controller.destroy()
+    }
+
+    @Test
+    fun testRunningItemAppearsInHistoryBeforeCompletion() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val serviceIntent = Intent(context, TranscriptionOverlayService::class.java).apply {
+            putExtra(TranscriptionOverlayService.EXTRA_AUDIO_URI, "mock://audio/whatsapp_de_1")
+        }
+        val controller = org.robolectric.Robolectric.buildService(TranscriptionOverlayService::class.java, serviceIntent)
+        controller.create()
+        controller.get().onStartCommand(serviceIntent, 0, 1)
+
+        var sawRunning = false
+        val startTime = System.currentTimeMillis()
+        while (System.currentTimeMillis() - startTime < 6000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            if (repository.allTranscriptions.first().any { it.status == TranscriptionEntity.STATUS_RUNNING }) {
+                sawRunning = true
+                break
+            }
+            kotlinx.coroutines.delay(50)
+        }
+        assertTrue("A running transcription must show up in the history right away", sawRunning)
+
+        var completed: List<TranscriptionEntity> = emptyList()
+        val completionStart = System.currentTimeMillis()
+        while (System.currentTimeMillis() - completionStart < 6000) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            completed = repository.allTranscriptions.first().filter { it.status == TranscriptionEntity.STATUS_COMPLETED }
+            if (completed.isNotEmpty()) break
+            kotlinx.coroutines.delay(100)
+        }
+
+        // The same row is updated in place - a finished transcription must not leave its running
+        // placeholder behind as a second card.
+        assertEquals(1, completed.size)
+        assertEquals(1, repository.allTranscriptions.first().size)
         controller.destroy()
     }
 
@@ -267,7 +308,7 @@ class ExampleRobolectricTest {
         val startTime = System.currentTimeMillis()
         while (System.currentTimeMillis() - startTime < 6000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
-            allItems = repository.allTranscriptions.first()
+            allItems = repository.allTranscriptions.first().filter { it.status == TranscriptionEntity.STATUS_COMPLETED }
             if (allItems.size == 1) break
             kotlinx.coroutines.delay(100)
         }

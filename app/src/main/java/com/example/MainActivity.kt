@@ -110,6 +110,15 @@ class MainViewModel(private val repository: TranscriptionRepository) : ViewModel
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    init {
+        // If the service was killed mid-transcription (crash, swipe-away, low memory), its row
+        // would otherwise sit in the history as a card that never finishes. A service that is
+        // genuinely still alive rewrites the row as running with its next progress tick.
+        viewModelScope.launch {
+            repository.failStaleRunning(STALE_RUNNING_TIMEOUT_MS)
+        }
+    }
+
     fun updateSearchQuery(query: String) {
         _searchQuery.value = query
     }
@@ -122,6 +131,10 @@ class MainViewModel(private val repository: TranscriptionRepository) : ViewModel
         viewModelScope.launch {
             repository.deleteById(id)
         }
+    }
+
+    companion object {
+        private const val STALE_RUNNING_TIMEOUT_MS = 30 * 60 * 1000L
     }
 }
 
@@ -1596,6 +1609,9 @@ fun HistoryItemCard(
         sdf.format(Date(item.timestamp))
     }
 
+    val isRunning = item.status == TranscriptionEntity.STATUS_RUNNING
+    val isFailed = item.status == TranscriptionEntity.STATUS_ERROR
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -1616,7 +1632,7 @@ fun HistoryItemCard(
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium
                 )
-                if (item.language.isNotEmpty()) {
+                if (item.language.isNotEmpty() && !isRunning) {
                     Box(
                         modifier = Modifier
                             .background(SleekHeader, RoundedCornerShape(8.dp))
@@ -1630,6 +1646,54 @@ fun HistoryItemCard(
                         )
                     }
                 }
+                if (isRunning || isFailed) {
+                    Box(
+                        modifier = Modifier
+                            .background(SleekHeader, RoundedCornerShape(8.dp))
+                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = if (isRunning) {
+                                Localization.getString("card_running_title", uiLanguage)
+                            } else {
+                                Localization.getString("card_failed_title", uiLanguage)
+                            },
+                            color = if (isFailed) MaterialTheme.colorScheme.error else SleekPrimary,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+
+            if (isRunning) {
+                Spacer(modifier = Modifier.height(12.dp))
+                // Indeterminate until the engine reports real progress, so the very first seconds
+                // (caching the file, reaching the server) don't look like a stuck 0% bar.
+                if (item.progress > 0f) {
+                    LinearProgressIndicator(
+                        progress = { item.progress.coerceIn(0f, 1f) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(4.dp)),
+                        color = SleekPrimary,
+                        trackColor = SleekHeader
+                    )
+                } else {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(4.dp)),
+                        color = SleekPrimary,
+                        trackColor = SleekHeader
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = item.statusText.ifEmpty { Localization.getString("card_running_title", uiLanguage) },
+                    color = SleekText.copy(alpha = 0.7f),
+                    fontSize = 12.sp
+                )
             }
 
             Spacer(modifier = Modifier.height(10.dp))
@@ -1639,8 +1703,17 @@ fun HistoryItemCard(
 
             Column {
                 Text(
-                    text = item.transcribedText,
-                    color = SleekText.copy(alpha = 0.9f),
+                    text = when {
+                        item.transcribedText.isNotEmpty() -> item.transcribedText
+                        isRunning -> Localization.getString("card_running_waiting_text", uiLanguage)
+                        isFailed -> item.statusText
+                        else -> item.transcribedText
+                    },
+                    color = if (isFailed && item.transcribedText.isEmpty()) {
+                        MaterialTheme.colorScheme.error
+                    } else if (isRunning && item.transcribedText.isEmpty()) {
+                        SleekText.copy(alpha = 0.5f)
+                    } else SleekText.copy(alpha = 0.9f),
                     fontSize = 14.sp,
                     lineHeight = 20.sp,
                     maxLines = if (isExpanded) Int.MAX_VALUE else 4,
@@ -1672,6 +1745,10 @@ fun HistoryItemCard(
                 }
             }
 
+            // A still-running item has nothing to copy or share yet, and deleting it here would
+            // only get its row rewritten by the service on completion - it's cancelled from the
+            // overlay/notification instead.
+            if (!isRunning) {
             Spacer(modifier = Modifier.height(16.dp))
 
             Row(
@@ -1723,6 +1800,7 @@ fun HistoryItemCard(
                         modifier = Modifier.size(18.dp)
                     )
                 }
+            }
             }
         }
     }

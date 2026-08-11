@@ -26,6 +26,20 @@ class TranscriptionRepository(private val dao: TranscriptionDao) {
         return dao.insertTranscription(encryptedEntity)
     }
 
+    // Progress/status of a running row. The text is written separately (updatePartialText) so a
+    // frequent progress tick doesn't have to re-encrypt the transcript every time.
+    suspend fun updateProgress(id: Int, status: String, statusText: String, progress: Float) {
+        dao.updateProgress(id, status, statusText, progress)
+    }
+
+    suspend fun updatePartialText(id: Int, text: String) {
+        dao.updateText(id, CryptoHelper.encrypt(text))
+    }
+
+    suspend fun failStaleRunning(olderThanMs: Long) {
+        dao.failStaleRunning(System.currentTimeMillis() - olderThanMs)
+    }
+
     suspend fun deleteById(id: Int) {
         dao.deleteTranscriptionById(id)
     }

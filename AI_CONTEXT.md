@@ -42,6 +42,13 @@ AudioScribe is designed with a highly modular, clean **MVVM (Model-View-ViewMode
   * File paths: `data/AppDatabase.kt`, `data/TranscriptionDao.kt`, `data/TranscriptionEntity.kt`, `data/TranscriptionRepository.kt`.
   * **On-Device AES-256 GCM Encryption:** If `SettingsManager.isEncryptionEnabled` is true, transcribed texts are encrypted on the fly before being committed to the database. It uses the `CryptoHelper` (`data/CryptoHelper.kt`) bound to the hardware-backed **Android Keystore System** to secure data seamlessly.
 
+### A2. Live history rows for running transcriptions
+* A history row is created **when a transcription starts**, not only when it finishes (`TranscriptionOverlayService.createRunningHistoryEntry`), so opening the app mid-run shows the item as a live card - independent of overlay vs. notification mode and of local vs. server transcription.
+* `TranscriptionEntity.status` is one of `running` / `completed` / `error`, plus `statusText` (the same human-readable label the overlay shows) and `progress`.
+* `updateQueueItem` is the single funnel: every status/progress change mirrors into the row via `syncItemToDatabase`, throttled to max one write per second unless the status label itself changed.
+* Completion re-inserts the row with the same id (`OnConflictStrategy.REPLACE`), so the running card turns into a normal entry instead of producing a second card. Cancel deletes the row (`QueueItem.cancelled` also covers a cancel that lands before the insert has finished); a killed service is cleaned up by `failStaleRunning` (30 min) on app start.
+* DB schema is **version 2** with a real `MIGRATION_1_2` - the destructive fallback must not be relied on here, v1 users have real history in that table.
+
 ### B. Speech-to-Text Engine
 * **LocalTranscriptionEngine (`engine/LocalTranscriptionEngine.kt`):**
   * Orchestrates every transcription: optionally attempts the server path first (below), then always falls back to on-device whisper.cpp/Vosk processing.

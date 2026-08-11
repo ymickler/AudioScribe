@@ -120,7 +120,17 @@ class TranscriptionOverlayService : Service() {
         // again once it finishes, fails, or falls back) - lets cancelQueueItem tell the server
         // which model's container to restart, since aborting the HTTP call alone doesn't stop
         // the CPU-bound transcription already running server-side.
-        var serverModelId: String? = null
+        var serverModelId: String? = null,
+        // Throttling state for mirroring this item's live progress into the history database
+        // (see syncItemToDatabase) - progress callbacks can fire many times per second and each
+        // write would otherwise hit SQLite and re-render every observing card.
+        var lastDbSyncMs: Long = 0L,
+        var lastDbSyncedText: String = "",
+        var lastDbSyncedStatus: String = "",
+        // Set the moment the user cancels. The history row is created asynchronously right after
+        // enqueueing, so a fast cancel can land before that insert even happened - without this
+        // flag the row would appear afterwards with nothing left to drive or remove it.
+        var cancelled: Boolean = false
     )
 
     // Queue state observed by Compose
@@ -219,6 +229,12 @@ class TranscriptionOverlayService : Service() {
         transcriptionQueue.add(item)
 
         CoroutineScope(Dispatchers.IO).launch {
+            // Create the history row up front instead of only on completion: opening the app
+            // while a transcription is still running (notification mode in particular, where
+            // there's no overlay to look at) now shows it as a live card that updates in place
+            // and turns into a normal completed entry when it's done.
+            createRunningHistoryEntry(item)
+
             val cachedUri = cacheAudioLocally(audioUriString) ?: audioUriString
             CoroutineScope(Dispatchers.Main).launch {
                 item.cachedUriString = cachedUri
@@ -235,6 +251,93 @@ class TranscriptionOverlayService : Service() {
                 } else {
                     checkAndProcessQueue()
                 }
+            }
+        }
+    }
+
+    private suspend fun createRunningHistoryEntry(item: QueueItem) {
+        if (item.cancelled) return
+        try {
+            val settings = DependencyProvider.getSettingsManager(this)
+            val repository = DependencyProvider.getRepository(this)
+            val timestamp = System.currentTimeMillis()
+            val id = repository.insert(
+                TranscriptionEntity(
+                    audioUri = item.originalUriString,
+                    transcribedText = "",
+                    timestamp = timestamp,
+                    language = settings.getTargetLanguageCode(),
+                    status = TranscriptionEntity.STATUS_RUNNING,
+                    statusText = com.example.data.Localization.getString("status_preparing", settings.uiLanguage),
+                    progress = 0f
+                )
+            )
+            item.savedEntityId = id.toInt()
+            item.savedTimestamp = timestamp
+            // Cancelled while this insert was in flight - clean up after ourselves.
+            if (item.cancelled) repository.deleteById(id.toInt())
+        } catch (e: Exception) {
+            // A failed history row must never block the transcription itself - the overlay and
+            // notification keep working, the item just won't show up in the app until it finishes.
+            android.util.Log.w("TranscriptionOverlayService", "Could not create running history entry", e)
+        }
+    }
+
+    // Mirrors a running item's live status into its history row so an open app shows the same
+    // progress as the overlay/notification. Throttled: at most one write per second unless the
+    // status label itself changed (which is what the user actually reads).
+    private fun syncItemToDatabase(item: QueueItem) {
+        val entityId = item.savedEntityId ?: return
+        if (item.isCompleted || item.isError || item.cancelled) return
+
+        val now = System.currentTimeMillis()
+        val statusChanged = item.status != item.lastDbSyncedStatus
+        if (!statusChanged && now - item.lastDbSyncMs < 1000L) return
+        item.lastDbSyncMs = now
+        item.lastDbSyncedStatus = item.status
+
+        val status = item.status
+        val progress = item.progress
+        val text = item.text
+        val textChanged = text != item.lastDbSyncedText
+        if (textChanged) item.lastDbSyncedText = text
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val repository = DependencyProvider.getRepository(this@TranscriptionOverlayService)
+                // Re-checked here, not just before launching: the item can finish while this
+                // write is still queued, and a late "running" update would otherwise reset a
+                // freshly completed card back to a progress bar.
+                if (item.isCompleted || item.isError || item.cancelled) return@launch
+                repository.updateProgress(entityId, TranscriptionEntity.STATUS_RUNNING, status, progress)
+                if (textChanged) repository.updatePartialText(entityId, text)
+            } catch (e: Exception) {
+                android.util.Log.w("TranscriptionOverlayService", "Could not sync running item to history", e)
+            }
+        }
+    }
+
+    private fun markHistoryEntryFailed(item: QueueItem, error: String) {
+        val entityId = item.savedEntityId ?: return
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                DependencyProvider.getRepository(this@TranscriptionOverlayService)
+                    .updateProgress(entityId, TranscriptionEntity.STATUS_ERROR, error, 0f)
+            } catch (e: Exception) {
+                android.util.Log.w("TranscriptionOverlayService", "Could not mark history entry failed", e)
+            }
+        }
+    }
+
+    // The row only ever existed to represent this in-flight run, so cancelling it should leave
+    // no trace in the history rather than a permanently half-finished card.
+    private fun deleteHistoryEntry(item: QueueItem) {
+        val entityId = item.savedEntityId ?: return
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                DependencyProvider.getRepository(this@TranscriptionOverlayService).deleteById(entityId)
+            } catch (e: Exception) {
+                android.util.Log.w("TranscriptionOverlayService", "Could not delete cancelled history entry", e)
             }
         }
     }
@@ -361,7 +464,12 @@ class TranscriptionOverlayService : Service() {
                     audioUri = item.originalUriString,
                     transcribedText = fullText,
                     language = targetLanguage,
-                    timestamp = item.savedTimestamp ?: System.currentTimeMillis()
+                    timestamp = item.savedTimestamp ?: System.currentTimeMillis(),
+                    // Replaces the "running" row created at enqueue time (same id), so the live
+                    // card turns into a regular completed entry instead of a second card.
+                    status = TranscriptionEntity.STATUS_COMPLETED,
+                    statusText = "",
+                    progress = 1f
                 )
                 val id = repository.insert(entity)
                 item.savedEntityId = id.toInt()
@@ -509,6 +617,7 @@ class TranscriptionOverlayService : Service() {
                 item.status = "Error occurred"
                 item.activeJob = null
                 updateQueueItem(item)
+                markHistoryEntryFailed(item, error)
 
                 showErrorNotification(this@TranscriptionOverlayService, error)
 
@@ -526,6 +635,9 @@ class TranscriptionOverlayService : Service() {
         if (index != -1) {
             transcriptionQueue[index] = item.copy()
         }
+        // Every status/progress change already funnels through here for the overlay, so the
+        // history card gets kept in sync from the same single place.
+        syncItemToDatabase(item)
     }
 
     private fun cancelQueueItem(itemId: String) {
@@ -538,6 +650,13 @@ class TranscriptionOverlayService : Service() {
         item.activeJob?.cancel()
         item.serverAttemptJob?.cancel()
         transcriptionQueue.remove(item)
+
+        // Same button also just dismisses an already finished card - that one must keep its
+        // history entry; only a genuinely cancelled run gets its placeholder row removed.
+        if (!item.isCompleted) {
+            item.cancelled = true
+            deleteHistoryEntry(item)
+        }
 
         // Aborting the local job above only stops the app from waiting on the response -
         // faster-whisper keeps transcribing server-side regardless, tying up a CPU core for a
