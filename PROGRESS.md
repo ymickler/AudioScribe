@@ -3,11 +3,11 @@
 <!-- Diese Datei wird von tools/progress.mjs erzeugt. Nicht von Hand bearbeiten -
      stattdessen die Kästchen in SPEC_TRANSPARENCY.md abhaken und das Skript laufen lassen. -->
 
-## Gesamt: 26 %
+## Gesamt: 34 %
 
-`█████░░░░░░░░░░░░░░░`  **14 von 53** Teilaufgaben erledigt
+`███████░░░░░░░░░░░░░`  **18 von 53** Teilaufgaben erledigt
 
-**Aktuell in Arbeit:** Paket A (Punkte 1-3) implementiert und getestet; 1.3 + 2.7 (automatisierte Service-Tests) noch offen
+**Aktuell in Arbeit:** Paket A ausgeliefert (Release v1.24.0). Offen in Paket A: 1.3 + 2.7 (automatisierte Service-Tests). Als Nächstes Paket B (Punkte 4-6).
 
 ## Pakete
 
@@ -23,7 +23,7 @@
 | ⬜ | 8. Job-API im Gateway (echte Serverphasen) | 0/8 | 0 % |
 | ⬜ | 9. Modell warmhalten | 0/4 | 0 % |
 | ⬜ | 10. Timeout-Kaskade staffeln | 0/3 | 0 % |
-| ⬜ | 11. Abschlussarbeiten je Umsetzungspaket | 0/4 | 0 % |
+| ✅ | 11. Abschlussarbeiten je Umsetzungspaket | 4/4 | 100 % |
 
 ---
 

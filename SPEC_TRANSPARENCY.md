@@ -294,10 +294,11 @@ erfolgreich war.
 
 ## 11. Abschlussarbeiten je Umsetzungspaket
 
-- [ ] 11.1 `AI_CONTEXT.md` um die neuen Phasen/Status-Konventionen ergänzen
-- [ ] 11.2 Eintrag in `../vibe_projects/CHANGELOG.md`
-- [ ] 11.3 Commit (Conventional Commits) + Push auf `main` → Release-CI
-- [ ] 11.4 Gateway-Container neu starten, sofern serverseitig etwas geändert wurde
+- [x] 11.1 `AI_CONTEXT.md` um die neuen Phasen/Status-Konventionen ergänzen
+- [x] 11.2 Eintrag in `../vibe_projects/CHANGELOG.md`
+- [x] 11.3 Commit (Conventional Commits) + Push auf `main` → Release-CI
+- [x] 11.4 Gateway-Container neu starten, sofern serverseitig etwas geändert wurde
+      *Paket A war rein App-seitig; Neustart auf Wunsch trotzdem durchgeführt, `/health` danach `ok`.*
 
 ---
 
