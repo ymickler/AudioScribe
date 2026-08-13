@@ -10,9 +10,14 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import okio.Buffer
+import okio.BufferedSink
+import okio.ForwardingSink
+import okio.buffer
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
@@ -48,7 +53,70 @@ class ServerTranscriptionEngine(private val client: OkHttpClient = sharedClient)
         // TCP/TLS handshake on every single call. Per-call timeouts still differ - newBuilder()
         // below returns a client that *shares* this pool, which is exactly the intended usage.
         private val sharedClient: OkHttpClient by lazy { OkHttpClient() }
+
+        // The upload is deliberately mapped to a narrow band rather than the full bar: on a
+        // typical voice note it's a small fraction of the total wall time (the server-side
+        // transcription dominates), so letting it run to 90% would just move the "frozen bar"
+        // problem to a higher number.
+        //
+        // Public because the UI has to map a raw progress value back onto "x% of the upload" to
+        // label the upload phase - keeping the band private would mean duplicating these two
+        // numbers in the service, where they could silently drift out of sync with the mapping
+        // actually being applied here.
+        const val UPLOAD_PROGRESS_START = 0.05f
+        const val UPLOAD_PROGRESS_END = 0.35f
     }
+
+    /**
+     * Wraps a [RequestBody] and reports how many bytes have actually been handed to the socket.
+     * OkHttp has no built-in upload-progress hook; this is the standard way to get one.
+     *
+     * The callback fires per write (~8 KB chunks), i.e. potentially hundreds of times per second
+     * on a fast connection - throttling is the *consumer's* job, and the service already funnels
+     * every status change through one throttled path.
+     */
+    private class CountingRequestBody(
+        private val delegate: RequestBody,
+        private val onBytesWritten: (written: Long, total: Long) -> Unit
+    ) : RequestBody() {
+        override fun contentType() = delegate.contentType()
+
+        override fun contentLength() = delegate.contentLength()
+
+        override fun writeTo(sink: BufferedSink) {
+            val total = contentLength()
+            val countingSink = object : ForwardingSink(sink) {
+                private var written = 0L
+
+                override fun write(source: Buffer, byteCount: Long) {
+                    super.write(source, byteCount)
+                    written += byteCount
+                    onBytesWritten(written, total)
+                }
+            }
+            // The delegate must write into a *buffered* sink - MultipartBody writes headers and
+            // boundaries via BufferedSink methods that a raw Sink doesn't offer. flush() rather
+            // than close(): closing here would also close the underlying socket sink that OkHttp
+            // still owns and intends to read the response from.
+            val bufferedSink = countingSink.buffer()
+            delegate.writeTo(bufferedSink)
+            bufferedSink.flush()
+        }
+    }
+
+    /**
+     * Which part of a server transcription is currently happening. Exists because the two parts
+     * have fundamentally different progress characteristics and must be presented differently:
+     * [UPLOADING] has a known total size and therefore a real, moving percentage, while
+     * [PROCESSING] is a single opaque wait on the server with no progress signal at all - the
+     * ASR webservice reports nothing until it's completely done.
+     *
+     * Showing a *static* percentage during [PROCESSING] was the actual user-visible bug: the
+     * display sat at "30%" for minutes on end, which is indistinguishable from a crash. The UI
+     * uses this phase to switch to an elapsed-time display plus an indeterminate progress bar
+     * instead of a frozen number.
+     */
+    enum class Phase { UPLOADING, PROCESSING }
 
     // sizeMb/ramMb/speedNote are optional metadata a compatible server may provide (our own
     // audioscribe-server does); default to 0/"" so a third-party server that only returns
@@ -176,17 +244,43 @@ class ServerTranscriptionEngine(private val client: OkHttpClient = sharedClient)
         // gives up and falls back to local while the server keeps burning CPU on a transcription
         // nobody is waiting for anymore.
         timeoutMs: Long = 240_000,
-        onProgress: (Float) -> Unit
+        onProgress: (Float) -> Unit,
+        // Defaulted so the other call site (LocalTranscriptionEngine's sequential fallback path,
+        // which drives a plain local-style progress bar) doesn't have to care about phases.
+        onPhase: (Phase) -> Unit = {}
     ): String = withContext(Dispatchers.IO) {
-        onProgress(0.1f)
+        onProgress(UPLOAD_PROGRESS_START)
+        onPhase(Phase.UPLOADING)
 
         val audioMediaType = "audio/*".toMediaTypeOrNull()
-        val requestBody = MultipartBody.Builder()
+        val multipartBody = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart("audio", audioFile.name, audioFile.asRequestBody(audioMediaType))
             .addFormDataPart("model", model)
             .addFormDataPart("language", language)
             .build()
+
+        // Everything from here to the server's reply used to be one opaque blocking call that
+        // reported nothing. Counting the bytes as they're written turns the upload half into a
+        // real, moving progress bar - and, more importantly, makes the *transition* to "server
+        // is now computing" observable at all, which is the single most useful thing to tell a
+        // user waiting on a transcription: the audio definitely arrived.
+        var phaseSwitched = false
+        val requestBody = CountingRequestBody(multipartBody) { written, total ->
+            if (total > 0) {
+                val fraction = (written.toDouble() / total.toDouble()).coerceIn(0.0, 1.0)
+                onProgress(
+                    (UPLOAD_PROGRESS_START + fraction * (UPLOAD_PROGRESS_END - UPLOAD_PROGRESS_START)).toFloat()
+                )
+            }
+            // Fires once, when the last byte has gone out. OkHttp can legitimately call writeTo()
+            // more than once (retry after an early failure, redirect), so this is guarded rather
+            // than assumed to happen exactly once per transcribe() call.
+            if (written >= total && total > 0 && !phaseSwitched) {
+                phaseSwitched = true
+                onPhase(Phase.PROCESSING)
+            }
+        }
 
         val request = Request.Builder()
             .url("${normalizeBaseUrl(baseUrl)}/v1/transcribe")
@@ -199,9 +293,15 @@ class ServerTranscriptionEngine(private val client: OkHttpClient = sharedClient)
             .writeTimeout(timeoutMs, TimeUnit.MILLISECONDS)
             .build()
 
-        onProgress(0.3f)
         val response = executeAsync(transcribeClient, request)
-        onProgress(0.85f)
+        // Belt and braces: a body small enough to be buffered whole, or an upload whose final
+        // write didn't reach the branch above, must still not leave the UI stuck in the upload
+        // phase once the request is demonstrably out the door.
+        if (!phaseSwitched) {
+            phaseSwitched = true
+            onPhase(Phase.PROCESSING)
+        }
+        onProgress(0.9f)
 
         response.use { resp ->
             if (!resp.isSuccessful) {

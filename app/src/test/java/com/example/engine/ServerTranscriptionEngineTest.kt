@@ -182,6 +182,98 @@ class ServerTranscriptionEngineTest {
         audioFile.delete()
     }
 
+    @Test
+    fun `transcribe reports upload progress within the upload band`() = runTest {
+        val body = """{"text": "ok"}"""
+        // The interceptor short-circuits before OkHttp would write the request body, so the
+        // upload is simulated here by writing it out explicitly - that is what drives the
+        // CountingRequestBody's sink and therefore the upload progress callbacks.
+        val client = fakeClient { request ->
+            request.body?.writeTo(okio.Buffer())
+            jsonResponse(request, 200, body)
+        }
+        val engine = ServerTranscriptionEngine(client)
+        val audioFile = File.createTempFile("audio", ".ogg")
+            .apply { writeBytes(ByteArray(64 * 1024) { it.toByte() }) }
+
+        val progressValues = mutableListOf<Float>()
+        engine.transcribe(
+            baseUrl = "http://fake-server:8000",
+            model = "tiny",
+            audioFile = audioFile,
+            language = "en",
+            onProgress = { progressValues.add(it) }
+        )
+
+        val uploadValues = progressValues.filter {
+            it > ServerTranscriptionEngine.UPLOAD_PROGRESS_START &&
+                it <= ServerTranscriptionEngine.UPLOAD_PROGRESS_END
+        }
+        assertTrue(
+            "expected several distinct upload progress values, got $progressValues",
+            uploadValues.distinct().size > 1
+        )
+        assertEquals(
+            "upload progress must be monotonically increasing",
+            uploadValues.sorted(),
+            uploadValues
+        )
+        assertEquals(1.0f, progressValues.last())
+        audioFile.delete()
+    }
+
+    @Test
+    fun `transcribe switches from upload phase to processing phase`() = runTest {
+        val client = fakeClient { request ->
+            request.body?.writeTo(okio.Buffer())
+            jsonResponse(request, 200, """{"text": "ok"}""")
+        }
+        val engine = ServerTranscriptionEngine(client)
+        val audioFile = File.createTempFile("audio", ".ogg")
+            .apply { writeBytes(ByteArray(16 * 1024)) }
+
+        val phases = mutableListOf<ServerTranscriptionEngine.Phase>()
+        engine.transcribe(
+            baseUrl = "http://fake-server:8000",
+            model = "tiny",
+            audioFile = audioFile,
+            language = "en",
+            onProgress = {},
+            onPhase = { phases.add(it) }
+        )
+
+        assertEquals(
+            listOf(
+                ServerTranscriptionEngine.Phase.UPLOADING,
+                ServerTranscriptionEngine.Phase.PROCESSING
+            ),
+            phases
+        )
+        audioFile.delete()
+    }
+
+    @Test
+    fun `transcribe still reaches the processing phase when the body is never written`() = runTest {
+        // A short-circuited call (or a buffered body OkHttp never streams) must not leave the UI
+        // stuck in the upload phase - the fallback after the request completes covers that.
+        val client = fakeClient { request -> jsonResponse(request, 200, """{"text": "ok"}""") }
+        val engine = ServerTranscriptionEngine(client)
+        val audioFile = File.createTempFile("audio", ".ogg").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+
+        val phases = mutableListOf<ServerTranscriptionEngine.Phase>()
+        engine.transcribe(
+            baseUrl = "http://fake-server:8000",
+            model = "tiny",
+            audioFile = audioFile,
+            language = "en",
+            onProgress = {},
+            onPhase = { phases.add(it) }
+        )
+
+        assertTrue(phases.contains(ServerTranscriptionEngine.Phase.PROCESSING))
+        audioFile.delete()
+    }
+
     @Test(expected = Exception::class)
     fun `transcribe throws on non-2xx response`() = runTest {
         val client = fakeClient { request -> jsonResponse(request, 500, "server error") }

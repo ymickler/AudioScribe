@@ -133,6 +133,14 @@ class TranscriptionOverlayService : Service() {
         // which model's container to restart, since aborting the HTTP call alone doesn't stop
         // the CPU-bound transcription already running server-side.
         var serverModelId: String? = null,
+        // Which half of a server transcription is running (upload vs. waiting on the server).
+        // null on the local path, where the engine reports a genuinely continuous progress value.
+        // Drives whether the UI shows a percentage at all - see progressLabel.
+        var serverPhase: ServerTranscriptionEngine.Phase? = null,
+        // When the current serverPhase started, so the "server is computing" phase can show a
+        // live elapsed timer instead of a percentage that physically cannot move (the ASR
+        // webservice reports nothing until it is completely finished).
+        var phaseStartedAtMs: Long = 0L,
         // Throttling state for mirroring this item's live progress into the history database
         // (see syncItemToDatabase) - progress callbacks can fire many times per second and each
         // write would otherwise hit SQLite and re-render every observing card.
@@ -267,8 +275,14 @@ class TranscriptionOverlayService : Service() {
         }
     }
 
-    private fun tr(key: String): String =
-        com.example.data.Localization.getString(key, DependencyProvider.getSettingsManager(this).uiLanguage)
+    // vararg args fill the {1}/{2} placeholders, so counters and measured values stay *inside*
+    // the translated sentence instead of being concatenated onto it in the caller's word order.
+    private fun tr(key: String, vararg args: Any): String =
+        com.example.data.Localization.getString(
+            key,
+            DependencyProvider.getSettingsManager(this).uiLanguage,
+            *args
+        )
 
     // Single source of truth for what an item's state is called, shared by the overlay row, the
     // progress notification and the history card - three surfaces that previously each derived
@@ -284,12 +298,43 @@ class TranscriptionOverlayService : Service() {
         else -> tr("status_waiting_in_queue")
     }
 
+    // The single place that answers "which item is currently being worked on". Must match on
+    // BOTH job handles: the sequential local queue uses activeJob, while an eager server attempt
+    // (attemptServerEagerly) runs under serverAttemptJob and leaves activeJob null for its entire
+    // lifetime. Missing the second half is exactly why the notification never showed the
+    // "(Server)" badge - the lookup silently found nothing on every server run.
+    private fun activeQueueItem(): QueueItem? =
+        transcriptionQueue.firstOrNull { it.activeJob != null || it.serverAttemptJob != null }
+
+    // True while the running item has no progress signal that can actually move, i.e. the server
+    // has the audio and is transcribing. The UI must then show elapsed time and an indeterminate
+    // bar - a static percentage is indistinguishable from a hung app.
+    private fun isIndeterminate(item: QueueItem?): Boolean =
+        item?.serverPhase == ServerTranscriptionEngine.Phase.PROCESSING
+
     // Phase label while a transcription is actually running. Whisper has no real progress signal,
     // so its percentage is mapped onto descriptive phases instead of a misleading number.
     private fun progressLabel(item: QueueItem, progress: Float, isWhisper: Boolean): String {
         val percent = (progress * 100).toInt()
         return when {
-            item.isServerAttempt -> "${tr("status_transcribing_server")} ($percent%)"
+            item.isServerAttempt -> when (item.serverPhase) {
+                // Real, moving percentage: the upload has a known total size. Mapped back out of
+                // the engine's 0.05-0.35 band so the user sees "62% of the upload", not "23%
+                // of something".
+                ServerTranscriptionEngine.Phase.UPLOADING -> {
+                    val span = ServerTranscriptionEngine.UPLOAD_PROGRESS_END -
+                        ServerTranscriptionEngine.UPLOAD_PROGRESS_START
+                    val uploadFraction =
+                        ((progress - ServerTranscriptionEngine.UPLOAD_PROGRESS_START) / span)
+                            .coerceIn(0f, 1f)
+                    tr("status_server_uploading", (uploadFraction * 100).toInt())
+                }
+                // No percentage on purpose: there is nothing to report until the server answers,
+                // so a clock is the only honest signal that work is still happening.
+                ServerTranscriptionEngine.Phase.PROCESSING ->
+                    tr("status_server_processing", elapsedInPhaseLabel(item))
+                else -> "${tr("status_transcribing_server")} ($percent%)"
+            }
             isWhisper -> when {
                 progress < 0.15f -> tr("status_whisper_loading")
                 progress < 0.4f -> tr("status_whisper_analyzing")
@@ -299,6 +344,49 @@ class TranscriptionOverlayService : Service() {
             }
             else -> "${tr("status_transcribing_local")} ($percent%)"
         }
+    }
+
+    private fun elapsedInPhaseLabel(item: QueueItem): String {
+        val startedAt = if (item.phaseStartedAtMs > 0L) item.phaseStartedAtMs else item.startedAtMs
+        if (startedAt <= 0L) return com.example.data.DurationFormat.formatElapsed(0L)
+        return com.example.data.DurationFormat.formatElapsed(System.currentTimeMillis() - startedAt)
+    }
+
+    // Drives the elapsed-time label during the indeterminate server phase. Without this the
+    // label would only ever be recomputed when some *other* event happened to update the item -
+    // and during that phase, by definition, nothing does: that is the whole reason the display
+    // appeared frozen.
+    private var elapsedTickerJob: kotlinx.coroutines.Job? = null
+
+    private fun ensureElapsedTicker() {
+        if (elapsedTickerJob?.isActive == true) return
+        elapsedTickerJob = serviceScope.launch {
+            // Self-terminating rather than cancelled from the outside: the loop exits as soon as
+            // no item is in an indeterminate phase any more, which covers completion, error,
+            // cancellation and fallback-to-local in one place instead of needing a stop call at
+            // each of those four sites. serviceScope cancellation in onDestroy covers shutdown.
+            while (true) {
+                kotlinx.coroutines.delay(1000)
+                val item = transcriptionQueue.firstOrNull {
+                    isIndeterminate(it) && !it.isCompleted && !it.isError && !it.cancelled
+                } ?: break
+                item.status = progressLabel(item, item.progress, isWhisper = false)
+                updateQueueItem(item)
+                updateOverallProgressNotification()
+            }
+        }
+    }
+
+    // Single entry point for a phase change so the elapsed timer always restarts together with
+    // the phase it measures, and the ticker is only ever running when something needs it.
+    private fun setServerPhase(item: QueueItem, phase: ServerTranscriptionEngine.Phase) {
+        if (item.serverPhase == phase) return
+        item.serverPhase = phase
+        item.phaseStartedAtMs = System.currentTimeMillis()
+        item.status = progressLabel(item, item.progress, isWhisper = false)
+        updateQueueItem(item)
+        updateOverallProgressNotification()
+        if (phase == ServerTranscriptionEngine.Phase.PROCESSING) ensureElapsedTicker()
     }
 
     private suspend fun createRunningHistoryEntry(item: QueueItem) {
@@ -343,7 +431,11 @@ class TranscriptionOverlayService : Service() {
         item.lastDbSyncedStatus = item.status
 
         val status = item.status
-        val progress = item.progress
+        // The history card renders progress <= 0 as an indeterminate bar (see HistoryItemCard).
+        // Reusing that instead of adding a phase column to the entity: it would need a Room
+        // migration for what is purely a rendering hint, while the status text already carries
+        // the real information (the running clock) into the card.
+        val progress = if (isIndeterminate(item)) 0f else item.progress
         val text = item.text
         val textChanged = text != item.lastDbSyncedText
         if (textChanged) item.lastDbSyncedText = text
@@ -455,7 +547,8 @@ class TranscriptionOverlayService : Service() {
                                     item.status = progressLabel(item, progress, isWhisper = false)
                                     updateQueueItem(item)
                                     updateOverallProgressNotification()
-                                }
+                                },
+                                onPhase = { phase -> setServerPhase(item, phase) }
                             )
 
                             finishItemSuccessfully(item, serverText, targetLanguage) {}
@@ -469,10 +562,15 @@ class TranscriptionOverlayService : Service() {
                     }
                     if (!succeeded) {
                         item.isServerAttempt = false
+                        // Cleared together with isServerAttempt: a stale PROCESSING phase would
+                        // otherwise keep the local run showing an elapsed timer and an
+                        // indeterminate bar, even though the local engine reports real progress.
+                        item.serverPhase = null
                         item.serverFallbackReason = "error"
                     }
                 } else {
                     item.isServerAttempt = false
+                    item.serverPhase = null
                     item.serverFallbackReason = "unreachable"
                 }
             } finally {
@@ -811,6 +909,8 @@ class TranscriptionOverlayService : Service() {
         // function silently no-op'd and never once updated the notification with real progress.
         val activeIndex = transcriptionQueue.indexOfFirst { it.activeJob != null || it.serverAttemptJob != null }
         if (activeIndex == -1) return
+        // Same predicate as activeQueueItem() - kept as indexOfFirst here because the position is
+        // also needed for the "x of y" counter below.
         val activeItem = transcriptionQueue[activeIndex]
         // Global notification mode always updates the notification; in overlay mode, only do so
         // for an item the user explicitly moved to the background - other overlay items keep
@@ -827,7 +927,12 @@ class TranscriptionOverlayService : Service() {
         )
         val statusText = "$counter · ${statusLabel(activeItem)}"
 
-        updateForegroundNotification(statusText, activeItem.progress, activeItem.text)
+        updateForegroundNotification(
+            statusText,
+            activeItem.progress,
+            activeItem.text,
+            indeterminate = isIndeterminate(activeItem)
+        )
     }
 
     private fun resolveCurrentModelType(): ModelDownloader.ModelType {
@@ -1068,15 +1173,29 @@ class TranscriptionOverlayService : Service() {
             Spacer(modifier = Modifier.height(4.dp))
 
             if ((item.activeJob != null || item.serverAttemptJob != null) && !item.isCompleted && !item.isError) {
-                LinearProgressIndicator(
-                    progress = { item.progress },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(4.dp)
-                        .clip(RoundedCornerShape(2.dp)),
-                    color = SleekPrimary,
-                    trackColor = SleekInnerSurface,
-                )
+                // Indeterminate while the server computes - see isIndeterminate(). The elapsed
+                // timer in the status line above carries the actual information in that phase;
+                // a determinate bar would just sit still and look broken.
+                if (isIndeterminate(item)) {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp)),
+                        color = SleekPrimary,
+                        trackColor = SleekInnerSurface,
+                    )
+                } else {
+                    LinearProgressIndicator(
+                        progress = { item.progress },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp)),
+                        color = SleekPrimary,
+                        trackColor = SleekInnerSurface,
+                    )
+                }
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
@@ -1241,7 +1360,12 @@ class TranscriptionOverlayService : Service() {
             .build()
     }
 
-    private fun updateForegroundNotification(status: String, progress: Float, partialText: String = "") {
+    private fun updateForegroundNotification(
+        status: String,
+        progress: Float,
+        partialText: String = "",
+        indeterminate: Boolean = false
+    ) {
         val settings = DependencyProvider.getSettingsManager(this)
         if (!settings.showAsNotification) return
         
@@ -1271,7 +1395,11 @@ class TranscriptionOverlayService : Service() {
             val cancelLabel = com.example.data.Localization.getString("notification_action_cancel", settings.uiLanguage)
             val switchLabel = com.example.data.Localization.getString("notification_action_switch_model", settings.uiLanguage)
             
-            val activeItem = transcriptionQueue.find { it.activeJob != null }
+            // Was `find { it.activeJob != null }`, which never matched an eager server attempt
+            // (that path leaves activeJob null throughout) - so the "(Server)" and
+            // "(Local fallback: ...)" badges below were dead code in notification mode, and the
+            // user had no way to tell whether the server was involved at all.
+            val activeItem = activeQueueItem()
             val activeModelName = when {
                 activeItem?.isServerAttempt == true ->
                     " (${com.example.data.Localization.getString("badge_server", settings.uiLanguage)})"
@@ -1289,7 +1417,10 @@ class TranscriptionOverlayService : Service() {
                 .setSmallIcon(android.R.drawable.ic_btn_speak_now)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setSilent(true)
-                .setProgress(100, (progress * 100).toInt(), false)
+                // Indeterminate while the server is computing: an animated bar reads as "still
+                // working", whereas a bar frozen at a fixed percentage for minutes reads as
+                // "stuck" - which was the actual complaint.
+                .setProgress(100, (progress * 100).toInt(), indeterminate)
                 .addAction(android.R.drawable.ic_menu_close_clear_cancel, cancelLabel, pendingCancelIntent)
                 .addAction(android.R.drawable.ic_menu_manage, switchLabel, pendingSwitchIntent)
                 

@@ -112,6 +112,12 @@ object Localization {
             "status_waiting_for_processing" to "Waiting for processing...",
             "status_analyzing_segment" to "Analyzing voice segment...",
             "status_transcribing_server" to "Transcribing via server...",
+            // {1} is the percentage of the *upload* - real, measured progress. The processing
+            // label takes an elapsed time instead of a percentage on purpose: the server reports
+            // no progress until it is completely done, and a number that never moves is
+            // indistinguishable from a hung app.
+            "status_server_uploading" to "Sending audio to server · {1}%",
+            "status_server_processing" to "Server is transcribing · {1}",
             "status_transcribing_local" to "Transcribing...",
             "status_whisper_loading" to "Loading Whisper model...",
             "status_whisper_analyzing" to "Analyzing audio waves...",
@@ -229,6 +235,8 @@ object Localization {
             "status_waiting_for_processing" to "Wartet auf Verarbeitung...",
             "status_analyzing_segment" to "Analysiere Sprachsegment...",
             "status_transcribing_server" to "Transkribiere über Server...",
+            "status_server_uploading" to "Sende Audio an Server · {1} %",
+            "status_server_processing" to "Server transkribiert · {1}",
             "status_transcribing_local" to "Transkribiere...",
             "status_whisper_loading" to "Lade Whisper-Modell...",
             "status_whisper_analyzing" to "Analysiere Audiowellen...",
