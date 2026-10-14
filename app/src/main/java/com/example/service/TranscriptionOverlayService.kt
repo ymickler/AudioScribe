@@ -212,7 +212,7 @@ class TranscriptionOverlayService : Service() {
             return START_NOT_STICKY
         }
 
-        val audioUriString = intent?.getStringExtra(EXTRA_AUDIO_URI)
+        val audioUriString = intent?.getStringExtra(EXTRA_AUDIO_URI) ?: intent?.data?.toString()
         if (audioUriString != null) {
             startForeground(NOTIFICATION_ID, createNotification())
             lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_START)
@@ -249,13 +249,16 @@ class TranscriptionOverlayService : Service() {
         transcriptionQueue.add(item)
 
         serviceScope.launch {
+            // Copy the shared file first: the sender's read grant is short-lived, so nothing
+            // slower (like the DB insert below) may run before it.
+            val cachedUri = cacheAudioLocally(audioUriString) ?: audioUriString
+
             // Create the history row up front instead of only on completion: opening the app
             // while a transcription is still running (notification mode in particular, where
             // there's no overlay to look at) now shows it as a live card that updates in place
             // and turns into a normal completed entry when it's done.
             createRunningHistoryEntry(item)
 
-            val cachedUri = cacheAudioLocally(audioUriString) ?: audioUriString
             serviceScope.launch(Dispatchers.Main) {
                 item.cachedUriString = cachedUri
                 updateQueueItem(item)

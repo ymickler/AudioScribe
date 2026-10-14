@@ -62,6 +62,12 @@ class ShareActivity : ComponentActivity() {
     private fun enqueueToTranscriptionService(audioUri: Uri) {
         val serviceIntent = Intent(this, TranscriptionOverlayService::class.java).apply {
             putExtra(TranscriptionOverlayService.EXTRA_AUDIO_URI, audioUri.toString())
+            // The read grant WhatsApp gives us is tied to this activity and only transfers to the
+            // service if the URI travels as intent data/ClipData together with the grant flag -
+            // a plain string extra carries no permission, so the service would be denied.
+            data = audioUri
+            clipData = android.content.ClipData.newRawUri("shared_audio", audioUri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent)
