@@ -190,6 +190,11 @@ class TranscriptionOverlayService : Service() {
     private fun cacheAudioLocally(sourceUriString: String): String? {
         return try {
             val sourceUri = Uri.parse(sourceUriString)
+            // Already copied into our cache by ShareActivity - reuse it, just track it for cleanup.
+            if (sourceUri.scheme == "file") {
+                cachedLocalAudioFile = File(sourceUri.path ?: return null)
+                return sourceUriString
+            }
             val cacheFile = File(cacheDir, "shared_audio_${System.currentTimeMillis()}.cache")
             contentResolver.openInputStream(sourceUri)?.use { input ->
                 FileOutputStream(cacheFile).use { output -> input.copyTo(output) }

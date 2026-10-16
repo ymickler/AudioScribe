@@ -50,13 +50,39 @@ class ShareActivity : ComponentActivity() {
             }
 
             if (audioUri != null) {
-                enqueueToTranscriptionService(audioUri)
+                // Copy while this activity still holds the sender's read grant; handing the
+                // service only a content:// URI proved unreliable (WhatsApp's provider denied it).
+                // The activity stays alive until the copy is done, then forwards a local file.
+                Thread {
+                    val local = copyToCache(audioUri)
+                    runOnUiThread {
+                        if (local != null) {
+                            enqueueToTranscriptionService(local)
+                        } else {
+                            // Fall back to the grant-forwarding path as a last resort.
+                            enqueueToTranscriptionService(audioUri)
+                        }
+                        finish()
+                    }
+                }.start()
+                return
             } else {
                 Toast.makeText(this, "No shared audio found", Toast.LENGTH_SHORT).show()
             }
         }
 
         finish()
+    }
+
+    private fun copyToCache(source: Uri): Uri? = try {
+        val file = java.io.File(cacheDir, "shared_audio_${System.currentTimeMillis()}.cache")
+        contentResolver.openInputStream(source)?.use { input ->
+            file.outputStream().use { input.copyTo(it) }
+        } ?: return null
+        Uri.fromFile(file)
+    } catch (e: Exception) {
+        android.util.Log.e("ShareActivity", "Could not copy shared audio", e)
+        null
     }
 
     private fun enqueueToTranscriptionService(audioUri: Uri) {
