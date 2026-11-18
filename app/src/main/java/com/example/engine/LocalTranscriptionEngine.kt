@@ -106,37 +106,15 @@ class LocalTranscriptionEngine(
                 // despite the user preferring the server, instead of looking identical to a
                 // plain "server not preferred" local run.
                 if (settingsManager.preferServerTranscription && modelOverride == null && !skipServerAttempt) {
-                    val serverUrl = settingsManager.serverUrl
-                    if (serverEngine.healthCheck(serverUrl)) {
-                        var serverSucceeded = false
-                        for (attempt in 1..2) {
-                            try {
-                                val serverModelId = settingsManager.serverModel
-                                callback.onServerModelResolved(ServerTranscriptionEngine.ServerModel(serverModelId, serverModelId))
-
-                                val serverText = serverEngine.transcribe(
-                                    baseUrl = serverUrl,
-                                    model = serverModelId,
-                                    audioFile = tempInput,
-                                    language = langCode,
-                                    onProgress = { progress -> callback.onProgress(progress) }
-                                )
-
-                                callback.onComplete(serverText)
-                                serverSucceeded = true
-                                break
-                            } catch (e: Exception) {
-                                if (e is kotlinx.coroutines.CancellationException) {
-                                    throw e
-                                }
-                                Log.w(tag, "Server transcription attempt $attempt failed", e)
-                            }
-                        }
-                        if (serverSucceeded) return@launch
-                        callback.onServerFallback("error")
-                    } else {
-                        callback.onServerFallback("unreachable")
+                    val text = ServerRouter(context).transcribe(tempInput, langCode,
+                        onTarget = { name, model -> callback.onServerModelResolved(
+                            ServerTranscriptionEngine.ServerModel(model ?: "large-v3", "$name · ${model ?: "large-v3"}")) },
+                        onProgress = callback::onProgress)
+                    if (text != null) {
+                        callback.onComplete(text)
+                        return@launch
                     }
+                    callback.onServerFallback("unreachable")
                 }
 
                 // 3. Local (offline) model resolution

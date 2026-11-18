@@ -140,6 +140,9 @@ jobs:
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "tag_name=$VERSION" >> $GITHUB_OUTPUT
 
+      - name: Test server routing and PC profile
+        run: ./gradlew :app:testDebugUnitTest --tests 'com.example.engine.*' --tests 'com.example.data.PcProfileTest' --stacktrace
+
       - name: Build Debug APK
         run: |
           VERSION_NUM="${{ env.VERSION }}"

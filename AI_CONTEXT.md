@@ -153,3 +153,13 @@ AudioScribe utilizes an on-the-fly custom translation helper to prevent screen r
   * **Label Filter:** Executes only if the pull request is labeled with **`build-preview`** (created via GitHub CLI or UI).
   * **Dynamic PR Versioning:** Injects a temporary version name (`[BaseVersion]-pr[PR_Number]-[Short_SHA]`) into Gradle via `-PversionName` so that the generated app binary contains metadata referencing the exact Pull Request and commit source.
   * **Artifact Upload:** Renames and uploads the preview APK as a workflow artifact, accessible directly from the Actions run summary page.
+
+### Preferred PC routing
+
+Both server entry points now use `ServerRouter`: imported PC profile → existing
+homelab → local engine. `PcProfile` stores encrypted device credentials in a
+backup-excluded preference file. `PcTranscriptionEngine` uses an origin-scoped CA,
+normal hostname verification and no redirects. Its asynchronous jobs use UUIDs;
+uncertain upload/poll failures raise `PendingPcJobException` and must never trigger
+another server attempt. PC cancellation uses per-job DELETE; only the homelab path
+uses the existing model-based cancel. PC service adapter: tools/pc-server/app_api.py.

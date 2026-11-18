@@ -133,6 +133,7 @@ class TranscriptionOverlayService : Service() {
         // which model's container to restart, since aborting the HTTP call alone doesn't stop
         // the CPU-bound transcription already running server-side.
         var serverModelId: String? = null,
+        var serverTarget: String = "Homelab",
         // Which half of a server transcription is running (upload vs. waiting on the server).
         // null on the local path, where the engine reports a genuinely continuous progress value.
         // Drives whether the UI shows a percentage at all - see progressLabel.
@@ -335,12 +336,12 @@ class TranscriptionOverlayService : Service() {
                     val uploadFraction =
                         ((progress - ServerTranscriptionEngine.UPLOAD_PROGRESS_START) / span)
                             .coerceIn(0f, 1f)
-                    tr("status_server_uploading", (uploadFraction * 100).toInt())
+                    "${item.serverTarget} · ${tr("status_server_uploading", (uploadFraction * 100).toInt())}"
                 }
                 // No percentage on purpose: there is nothing to report until the server answers,
                 // so a clock is the only honest signal that work is still happening.
                 ServerTranscriptionEngine.Phase.PROCESSING ->
-                    tr("status_server_processing", elapsedInPhaseLabel(item))
+                    "${item.serverTarget} · ${tr("status_server_processing", elapsedInPhaseLabel(item))}"
                 else -> "${tr("status_transcribing_server")} ($percent%)"
             }
             isWhisper -> when {
@@ -496,100 +497,48 @@ class TranscriptionOverlayService : Service() {
     // redundantly retry the server a second time.
     private fun attemptServerEagerly(item: QueueItem) {
         val settings = DependencyProvider.getSettingsManager(this)
-        val serverUrl = settings.serverUrl
         val targetLanguage = settings.getTargetLanguageCode()
         val uriString = item.cachedUriString ?: item.originalUriString
-
         item.startedAtMs = System.currentTimeMillis()
-        // "Preparing" alone left the user with no idea whether the app was still just getting
-        // the file ready, actually trying to reach the server, or already talking to it - the
-        // next two status updates below (before/after healthCheck) make each step visible
-        // instead of leaving the UI stuck on one vague label for however long the network
-        // round-trip takes.
-        item.status = com.example.data.Localization.getString("status_preparing", settings.uiLanguage)
+        item.status = tr("status_connecting_server")
         updateQueueItem(item)
-
         val job = serviceScope.launch {
-            var succeeded = false
             try {
-                val serverEngine = ServerTranscriptionEngine()
-                item.status = com.example.data.Localization.getString("status_connecting_server", settings.uiLanguage)
-                updateQueueItem(item)
-                updateOverallProgressNotification()
-                // On a healthy local-network server the health check + first progress callback
-                // can both land within a few hundred ms combined - fast enough that these two
-                // status strings replace each other before a human glancing at the screen ever
-                // registers either one, which was the actual complaint (not that the states
-                // don't exist, but that they're invisible in practice). A short minimum-visible
-                // delay is a standard, deliberate UX pattern for exactly this - it's negligible
-                // next to the many-seconds-to-minutes a real transcription takes either way.
-                kotlinx.coroutines.delay(400)
-
-                if (serverEngine.healthCheck(serverUrl)) {
-                    item.status = com.example.data.Localization.getString("status_connected_server", settings.uiLanguage)
-                    updateQueueItem(item)
-                    updateOverallProgressNotification()
-                    kotlinx.coroutines.delay(400)
-
-                    for (attempt in 1..2) {
-                        try {
-                            val audioPath = Uri.parse(uriString).path
-                                ?: throw java.io.IOException("Cached audio file has no local path")
-                            val audioFile = File(audioPath)
-                            item.isServerAttempt = true
-                            item.serverFallbackReason = null
-                            // Recorded so a later cancel (cancelQueueItem) knows which model's
-                            // container to restart on the server - the ASR webservice has no
-                            // way to cancel an in-flight transcription otherwise, and closing
-                            // the HTTP connection alone leaves it running at full CPU.
-                            item.serverModelId = settings.serverModel
-                            updateQueueItem(item)
-
-                            val serverText = serverEngine.transcribe(
-                                baseUrl = serverUrl,
-                                model = settings.serverModel,
-                                audioFile = audioFile,
-                                language = targetLanguage,
-                                onProgress = { progress ->
-                                    item.progress = progress
-                                    item.status = progressLabel(item, progress, isWhisper = false)
-                                    updateQueueItem(item)
-                                    updateOverallProgressNotification()
-                                },
-                                onPhase = { phase -> setServerPhase(item, phase) }
-                            )
-
-                            finishItemSuccessfully(item, serverText, targetLanguage) {}
-                            succeeded = true
-                            break
-                        } catch (e: kotlinx.coroutines.CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            android.util.Log.w(TAG, "Eager server attempt $attempt failed for ${item.id}", e)
-                        }
-                    }
-                    if (!succeeded) {
-                        item.isServerAttempt = false
-                        // Cleared together with isServerAttempt: a stale PROCESSING phase would
-                        // otherwise keep the local run showing an elapsed timer and an
-                        // indeterminate bar, even though the local engine reports real progress.
-                        item.serverPhase = null
-                        item.serverFallbackReason = "error"
-                    }
-                } else {
-                    item.isServerAttempt = false
-                    item.serverPhase = null
-                    item.serverFallbackReason = "unreachable"
-                }
+                val audioFile = File(Uri.parse(uriString).path ?: error("Missing cached audio"))
+                val text = com.example.engine.ServerRouter(this@TranscriptionOverlayService).transcribe(
+                    audioFile, targetLanguage,
+                    onTarget = { name, model ->
+                        item.serverTarget = name
+                        item.serverModelId = model
+                        item.isServerAttempt = true
+                        updateQueueItem(item)
+                    },
+                    onProgress = { progress ->
+                        item.progress = progress
+                        item.status = progressLabel(item, progress, false)
+                        updateQueueItem(item)
+                        updateOverallProgressNotification()
+                    },
+                    onPhase = { phase -> setServerPhase(item, phase) }
+                )
+                if (text != null) finishItemSuccessfully(item, text, targetLanguage) {}
+                else item.serverFallbackReason = "unreachable"
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // An ambiguous PC upload must remain an error, never become a duplicate job.
+                item.isError = true
+                val message = if (e is com.example.engine.PendingPcJobException) tr("pc_job_uncertain")
+                    else tr("status_error_occurred")
+                item.errorMsg = message
+                markHistoryEntryFailed(item, message)
+                showErrorNotification(this@TranscriptionOverlayService, message)
             } finally {
                 item.serverAttemptJob = null
                 item.serverModelId = null
+                item.isServerAttempt = false
+                item.serverPhase = null
                 updateQueueItem(item)
-                // Always re-check the queue, not just on failure: this was the other half of
-                // the stuck-notification bug - on a *successful* eager server transcription,
-                // checkAndProcessQueue() was never called, so the service never noticed the
-                // queue was fully drained and never self-stopped (clearing the stale
-                // notification) or picked up any remaining local-only item.
                 checkAndProcessQueue()
             }
         }

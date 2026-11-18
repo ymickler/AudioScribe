@@ -19,4 +19,12 @@ debug.keystore
 /jdk/
 /android-sdk/
 
+# Private runtime pairing material must never enter a public build.
+*pc-profile*.json
+*pairing*.json
+*.pem
+*.key
+*.crt
+__pycache__/
+
 

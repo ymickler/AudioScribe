@@ -923,6 +923,9 @@ fun MainScreen() {
                             )
                             Spacer(modifier = Modifier.height(14.dp))
 
+                            PcServerSettings(uiLanguage)
+                            Spacer(modifier = Modifier.height(14.dp))
+
                             var serverUrlText by remember { mutableStateOf(settingsManager.serverUrl) }
                             var serverModels by remember { mutableStateOf<List<com.example.engine.ServerTranscriptionEngine.ServerModel>>(emptyList()) }
                             var hasTestedConnection by remember { mutableStateOf(false) }

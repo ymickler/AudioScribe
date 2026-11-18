@@ -9,6 +9,15 @@ import java.util.Locale
 object Localization {
     private val translations = mapOf(
         "en" to mapOf(
+            "pc_title" to "Preferred PC",
+            "pc_help" to "Automatic order: PC → homelab → phone. Import the private profile generated on your PC. The server preference switch applies to both servers.",
+            "pc_import" to "Import PC profile",
+            "pc_remove" to "Remove PC",
+            "pc_test" to "Test PC",
+            "pc_ready" to "PC ready",
+            "pc_unavailable" to "PC unavailable — homelab or phone will be used",
+            "pc_import_failed" to "Could not import PC profile",
+            "pc_job_uncertain" to "Connection to PC lost. The job may still be running; no second transcription was started. Check the PC before retrying.",
             "app_name" to "AudioScribe",
             "tab_history" to "History",
             "tab_settings" to "Settings",
@@ -132,6 +141,15 @@ object Localization {
             "notification_processing_counter" to "Processing {1} of {2}",
         ),
         "de" to mapOf(
+            "pc_title" to "Bevorzugter PC",
+            "pc_help" to "Automatische Reihenfolge: PC → Homelab → Handy. Importiere das private Profil von deinem PC. Der Schalter zur Servernutzung gilt für beide Server.",
+            "pc_import" to "PC-Profil importieren",
+            "pc_remove" to "PC entfernen",
+            "pc_test" to "PC testen",
+            "pc_ready" to "PC bereit",
+            "pc_unavailable" to "PC nicht verfügbar — Homelab oder Handy wird verwendet",
+            "pc_import_failed" to "PC-Profil konnte nicht importiert werden",
+            "pc_job_uncertain" to "Verbindung zum PC verloren. Der Auftrag läuft möglicherweise weiter; es wurde keine zweite Transkription gestartet. Vor erneutem Versuch am PC prüfen.",
             "app_name" to "AudioScribe",
             "tab_history" to "Verlauf",
             "tab_settings" to "Einstellungen",

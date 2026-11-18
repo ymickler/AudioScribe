@@ -55,3 +55,11 @@ To view a copy of this license, visit [Creative Commons CC BY-NC 4.0](https://cr
 ---
 
 *Note: This project is an independent utility and is not affiliated with, authorized, or endorsed by WhatsApp Inc. or Meta Platforms, Inc.*
+
+## Preferred PC with automatic fallback
+
+Optionally import your private PC profile in Settings, keep your existing homelab
+URL, and enable server transcription. Each recording tries the ready PC first,
+then the homelab, then the offline phone engine. No personal server address or
+credential is shipped in the APK. See [PC integration](tools/pc-server/README.md)
+for pairing, TLS and the durable job protocol.
