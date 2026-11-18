@@ -12,6 +12,16 @@ it with Android Keystore and excludes it from cloud backups and device transfer.
 Delete transfer copies after import. Never publish or commit this file. Rotate the
 server-side token if a copy is lost; import the replacement profile on your phone.
 
+For the supported Lokal Transkript service version, stop the service, back up
+`server.py`, apply `lokal-transkript.patch` to it and copy `app_api.py` beside it.
+The patch adds the migration, authentication hook, language handling and cooperative
+cancellation described below. Review patch failures rather than forcing a mismatch.
+Run `create_profile.py SERVICE_DIRECTORY` on the PC to create the private profile;
+use `--rotate` to invalidate the old app credential. Restart the existing service
+using its installer to retain its startup trigger and private-subnet firewall.
+Copy `test_app_api.py` into the service directory and run its isolated tests with
+the service's Python environment (requires the existing synthetic test WAV).
+
 TLS uses only the imported CA for that PC and retains normal hostname checks.
 Credentials are never forwarded through redirects. LAN access requires the PC
 to be awake, a reachable address and a private-subnet firewall rule. Remote access

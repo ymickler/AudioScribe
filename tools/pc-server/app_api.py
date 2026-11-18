@@ -62,6 +62,7 @@ def install(s):
         partial = s.DATA / "uploads" / (job_id + ".part")
         final = partial.with_suffix(".media")
         accepted = False
+        owns_final = False
         try:
             with s.connect() as db:
                 existing = db.execute("SELECT app_language,status FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -93,26 +94,33 @@ def install(s):
             def detect():
                 for suffix in (".ogg", ".wav", ".mp3", ".m4a", ".flac", ".webm", ".aac", ".wma"):
                     try:
-                        s.probe_media(partial, "audio" + suffix)
+                        with s.av.open(str(partial), format=s.FORMATS[suffix],
+                                       options={"protocol_whitelist": "file"}) as media:
+                            if not media.streams.audio:
+                                continue
+                            frame = next(media.decode(audio=0))
+                            if not frame.samples:
+                                continue
                         return "audio" + suffix
                     except Exception:
                         pass
                 raise HTTPException(400, "Unsupported or invalid audio")
             name = await asyncio.to_thread(detect)
             partial.rename(final)
+            owns_final = True
             with s.connect() as db:
                 # Cancellation can insert a tombstone while upload/probing is in progress.
                 db.execute("INSERT OR IGNORE INTO jobs(id,name,status,created,size,app_language) VALUES (?,?,'queued',?,?,?)",
                            (job_id, name, time.time(), size, language))
                 state = db.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()["status"]
             accepted = state != "cancelled"
-            if not accepted:
+            if owns_final and not accepted:
                 final.unlink(missing_ok=True)
             s.wake.set()
             return {"id": job_id, "status": state}
         finally:
             partial.unlink(missing_ok=True)
-            if not accepted:
+            if owns_final and not accepted:
                 final.unlink(missing_ok=True)
             s.upload_lock.release()
 
@@ -139,5 +147,9 @@ def install(s):
                 raise HTTPException(404, "App job not found")
             elif row["status"] not in ("done", "error", "cancelled"):
                 db.execute("UPDATE jobs SET status='cancelled' WHERE id=?", (job_id,))
+        if row is not None and row["status"] == "queued":
+            s.remove_files(job_id)
         # Running inference cooperatively observes this state at the next segment boundary.
         return {"id": job_id, "status": "cancelled" if row is None else s.get_job(job_id)["status"]}
+
+    return authenticate

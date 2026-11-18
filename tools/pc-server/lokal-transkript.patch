@@ -1,0 +1,127 @@
+--- a/server.py
++++ b/server.py
+@@ -76,6 +76,8 @@
+         for column in ("source_archive", "source_path"):
+             if column not in columns:
+                 db.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT")
++        if "app_language" not in columns:
++            db.execute("ALTER TABLE jobs ADD COLUMN app_language TEXT")
+         db.execute("UPDATE jobs SET status='queued', progress=0 WHERE status='running'")
+     for path in (DATA / "uploads").glob("*.part"):
+         path.unlink(missing_ok=True)
+@@ -144,7 +146,7 @@
+ 
+ def cleanup():
+     with connect() as db:
+-        rows = db.execute("SELECT id FROM jobs WHERE status IN ('done','error') AND created<?",
++        rows = db.execute("SELECT id FROM jobs WHERE status IN ('done','error','cancelled') AND created<?",
+                           (time.time() - CFG["retention_days"] * 86400,)).fetchall()
+         for row in rows:
+             remove_files(row["id"])
+@@ -160,6 +162,15 @@
+     free, utilization, temperature = [float(value.strip()) for value in result.stdout.splitlines()[0].split(",")]
+     if free < 8192 or utilization >= 80 or temperature >= 80:
+         raise RuntimeError("GPU bereits ausgelastet, zu warm oder weniger als 8 GB Grafikspeicher frei")
++
++class JobCancelled(Exception):
++    pass
++
++
++def check_cancelled(job_id):
++    if get_job(job_id)["status"] == "cancelled":
++        raise JobCancelled()
++
+ 
+ def worker():
+     model = None
+@@ -188,6 +199,7 @@
+         started = time.monotonic()
+         engine.update(status="busy", message="Aufnahme wird transkribiert")
+         try:
++            check_cancelled(job_id)
+             gpu_preflight()
+             if model is None:
+                 engine.update(message="GPU-Modell wird für den Auftrag geladen …")
+@@ -195,34 +207,46 @@
+                 model = WhisperModel(str(MODEL_PATH), device="cuda", compute_type="float16", local_files_only=True,
+                                      cpu_threads=2, num_workers=1)
+                 log.info("GPU-Modell large-v3 geladen; Schonbetrieb, Batch 1")
++            check_cancelled(job_id)
+             pipeline = BatchedInferencePipeline(model=model)
+             audio = decode_recording(DATA / "uploads" / (job_id + ".media"), FORMATS[Path(row["name"]).suffix.lower()])
+             segments, info = pipeline.transcribe(audio,
+-                language="de", task="transcribe", beam_size=5, batch_size=1,
++                language=row["app_language"] or "de", task="transcribe", beam_size=5, batch_size=1,
+                 vad_filter=True, vad_parameters={"min_silence_duration_ms": 500},
+                 word_timestamps=False)
+             update_job(job_id, duration=info.duration)
+             output = []
+             for segment in segments:
++                check_cancelled(job_id)
+                 if stop.is_set():
+                     update_job(job_id, status="queued", progress=0)
+                     return
+                 output.append({"start": segment.start, "end": segment.end, "text": segment.text.strip()})
+                 update_job(job_id, processed=segment.end, progress=min(99, segment.end / max(info.duration, 1) * 100),
+                            elapsed=time.monotonic() - started)
++            check_cancelled(job_id)
+             texts, srt, vtt = [], [], ["WEBVTT\n"]
+             for i, item in enumerate(output, 1):
+                 texts.append(item["text"])
+                 srt.append(f"{i}\n{timestamp(item['start'])} --> {timestamp(item['end'])}\n{item['text']}\n")
+                 vtt.append(f"{timestamp(item['start'], '.')} --> {timestamp(item['end'], '.')}\n{item['text']}\n")
+             results = {"txt": "\n".join(texts) + "\n", "srt": "\n".join(srt), "vtt": "\n".join(vtt),
+-                       "json": json.dumps({"language": "de", "duration": info.duration, "segments": output}, ensure_ascii=False, indent=2)}
++                       "json": json.dumps({"language": row["app_language"] or "de", "duration": info.duration, "segments": output}, ensure_ascii=False, indent=2)}
+             for suffix, content in results.items():
+                 (DATA / "results" / f"{job_id}.{suffix}").write_text(content, encoding="utf-8")
+-            update_job(job_id, status="done", progress=100, elapsed=time.monotonic() - started)
++            with connect() as db:
++                changed = db.execute("UPDATE jobs SET status='done',progress=100,elapsed=? WHERE id=? AND status='running'",
++                                     (time.monotonic() - started, job_id)).rowcount
++            if not changed:
++                raise JobCancelled()
+             # The original recording is no longer needed once all exports exist.
+             (DATA / "uploads" / (job_id + ".media")).unlink(missing_ok=True)
++        except JobCancelled:
++            remove_files(job_id)
+         except Exception:
++            if get_job(job_id)["status"] == "cancelled":
++                remove_files(job_id)
++                continue
+             log.exception("Transkription fehlgeschlagen: %s", job_id)
+             update_job(job_id, status="error", error="Verarbeitung fehlgeschlagen. Bitte Dateiformat/Tonspur prüfen oder Dienstprotokoll ansehen.",
+                        elapsed=time.monotonic() - started)
+@@ -240,6 +264,7 @@
+     wake.clear()
+     init_db()
+     thread = threading.Thread(target=worker, name="transcription", daemon=True)
++    app.state.worker = thread
+     thread.start()
+     yield
+     stop.set()
+@@ -251,7 +276,12 @@
+ 
+ @app.middleware("http")
+ async def security(request, call_next):
+-    if request.method not in ("GET", "HEAD", "OPTIONS"):
++    if request.url.path.startswith("/v1/"):
++        try:
++            app_authenticate(request)
++        except HTTPException as exc:
++            return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
++    elif request.method not in ("GET", "HEAD", "OPTIONS"):
+         origin = request.headers.get("origin")
+         if origin != f"https://{request.headers.get('host', '')}":
+             return JSONResponse({"detail": "Ungültiger Ursprung der Anfrage."}, status_code=403)
+@@ -513,6 +543,10 @@
+     wake.set()
+     return {"ok": True}
+ 
++import sys
++import app_api
++app_authenticate = app_api.install(sys.modules[__name__])
++
+ if __name__ == "__main__":
+     import uvicorn
+     uvicorn.run(app, host="0.0.0.0", port=CFG["port"], proxy_headers=False,
