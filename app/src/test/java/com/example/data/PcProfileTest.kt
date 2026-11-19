@@ -16,6 +16,9 @@ class PcProfileTest {
     @Test fun acceptsHttpsOrigin() {
         assertEquals("https://pc.example:8443", PcProfile.parse(json("https://pc.example:8443/")).url)
     }
+    @Test fun acceptsUtf8BomFromTextEditor() {
+        assertEquals("https://pc.example:8443", PcProfile.parse("\uFEFF" + json("https://pc.example:8443")).url)
+    }
     @Test(expected = IllegalArgumentException::class) fun rejectsCleartext() { PcProfile.parse(json("http://pc.example")) }
     @Test(expected = IllegalArgumentException::class) fun rejectsCredentialsInUrl() { PcProfile.parse(json("https://user:password@pc.example")) }
     @Test(expected = IllegalArgumentException::class) fun rejectsPath() { PcProfile.parse(json("https://pc.example/api")) }

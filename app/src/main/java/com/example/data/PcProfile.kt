@@ -8,7 +8,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 data class PcProfile(val url: String, val token: String, val caPem: String) {
     companion object {
         fun parse(json: String): PcProfile {
-            val obj = JSONObject(json)
+            val obj = JSONObject(json.trim().removePrefix("\uFEFF").trim())
             require(obj.getInt("version") == 1) { "Unsupported PC profile" }
             val url = obj.getString("url").trimEnd('/')
             val parsed = url.toHttpUrl()

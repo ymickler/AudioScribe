@@ -9,6 +9,15 @@ import java.util.Locale
 object Localization {
     private val translations = mapOf(
         "en" to mapOf(
+            "pc_paste" to "Paste profile text",
+            "pc_paste_help" to "Paste the complete JSON content copied from your PC. It contains your private access key.",
+            "pc_cancel" to "Cancel",
+            "pc_importing" to "Importing PC profile…",
+            "pc_import_success" to "PC profile saved. Tap “Test PC”. Enable server usage to use it for transcription.",
+            "pc_import_invalid_json" to "Invalid profile text. Copy the entire JSON from the opening { to the closing }, without extra text. Maximum size: 32 KB.",
+            "pc_import_invalid_certificate" to "The certificate in the profile is invalid or incomplete. Copy the complete original profile again.",
+            "pc_import_storage_failed" to "Could not securely save the profile on this device. Please try again.",
+            "pc_import_read_failed" to "Could not read the file (maximum 32 KB). Use “Paste profile text” and paste the complete JSON instead.",
             "pc_title" to "Preferred PC",
             "pc_help" to "Automatic order: PC â†’ homelab â†’ phone. Import the private profile generated on your PC. The server preference switch applies to both servers.",
             "pc_import" to "Import PC profile",
@@ -141,6 +150,15 @@ object Localization {
             "notification_processing_counter" to "Processing {1} of {2}",
         ),
         "de" to mapOf(
+            "pc_paste" to "Profiltext einfügen",
+            "pc_paste_help" to "Füge den vollständigen JSON-Inhalt vom PC ein. Er enthält deinen privaten Zugangsschlüssel.",
+            "pc_cancel" to "Abbrechen",
+            "pc_importing" to "PC-Profil wird importiert…",
+            "pc_import_success" to "PC-Profil gespeichert. Tippe auf „PC testen“. Aktiviere die Servernutzung, um damit zu transkribieren.",
+            "pc_import_invalid_json" to "Ungültiger Profiltext. Kopiere das gesamte JSON von der öffnenden { bis zur schließenden }, ohne zusätzlichen Text. Maximale Größe: 32 KB.",
+            "pc_import_invalid_certificate" to "Das Zertifikat im Profil ist ungültig oder unvollständig. Kopiere das vollständige Originalprofil erneut.",
+            "pc_import_storage_failed" to "Das Profil konnte auf diesem Gerät nicht sicher gespeichert werden. Bitte erneut versuchen.",
+            "pc_import_read_failed" to "Die Datei konnte nicht gelesen werden (maximal 32 KB). Nutze „Profiltext einfügen“ und füge dort das vollständige JSON ein.",
             "pc_title" to "Bevorzugter PC",
             "pc_help" to "Automatische Reihenfolge: PC â†’ Homelab â†’ Handy. Importiere das private Profil von deinem PC. Der Schalter zur Servernutzung gilt fÃ¼r beide Server.",
             "pc_import" to "PC-Profil importieren",
